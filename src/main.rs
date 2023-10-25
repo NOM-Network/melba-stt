@@ -34,14 +34,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (mut client, r, channel_init_recv) = setup_discord_bot().await?;
 
-    let collate_task =
+    let handle_streams_task =
         tokio::task::spawn(async move { handle_audio_streams(r, channel_init_recv).await });
 
+    let timeout_fut = tokio::time::timeout(std::time::Duration::from_secs(30), client.start());
     info!("starting client");
-    let x = tokio::time::timeout(std::time::Duration::from_secs(30), client.start()).await;
+    tokio::select! {
+        _ = timeout_fut => (),
+        _ = handle_streams_task => (),
+    }
     info!("done");
-
-    collate_task.abort();
+    
 
     Ok(())
 }
@@ -81,6 +84,8 @@ async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Receiv
             }
         };
 
+        tasks.retain(|recv| recv.stream_info != info);
+
         let StreamInfo{ ssrc, user_id } = info;
         info!(?ssrc, ?user_id, "task ended");
         // let ((stream_info, packet), _index, _others) = select_future.await;
@@ -93,13 +98,40 @@ async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Receiv
 #[instrument(skip_all)]
 async fn handle_stream(setup: ChannelSetup) -> StreamInfo {
     let ChannelSetup(StreamInfo { user_id, ssrc }, mut reciever) = setup;
-    info!(?ssrc, user_id, "starting recieve");
+    info!(ssrc, user_id, "starting recieve");
+    let mut buffer = Vec::with_capacity((10000 / 20) * 48_000);  // pre-allocate space for roughly 10s of speech
 
-    while let Some(packet) = reciever.recv().await {
-        trace!(ssrc, len=packet.len(), "got packet");
+    loop {
+        let side = tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => StreamSide::Silence,
+            audio = reciever.recv() => StreamSide::Audio(audio),
+        }; 
+
+        match side {
+            StreamSide::Silence => {
+                if buffer.is_empty() {
+                    continue;
+                }
+                todo!("submit audio to be processed");
+            },
+            StreamSide::Audio(audio) => {
+                if let Some(mut audio) = audio {
+                    buffer.append(&mut audio);
+                    trace!(buffer_len=buffer.len(), "appeneded")
+                } else {
+                    debug!(ssrc, user_id, "recieve stream closed");
+                    break;
+                }
+            }
+        }
     }
 
     StreamInfo { user_id, ssrc }
+}
+
+enum StreamSide {
+    Silence,
+    Audio(Option<Vec<i16>>)
 }
 
 struct RecvTask {
@@ -207,7 +239,7 @@ impl futures::Future for ChannelSetup {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StreamInfo {
     user_id: u64,
     ssrc: u32,
