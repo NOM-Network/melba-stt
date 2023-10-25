@@ -15,6 +15,7 @@ dependencies = [
  "samplerate",
  "serenity",
  "songbird",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",

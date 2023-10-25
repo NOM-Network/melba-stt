@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use actual_discord_stt::nn::NnPaths;
 
+use futures::TryFutureExt;
 use serenity::async_trait;
 use tokio::sync::mpsc;
+use thiserror::Error;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 #[tokio::main]
@@ -32,9 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (mut client, r, channel_init_recv) = setup_discord_bot().await?;
 
-    let collate_task = tokio::task::spawn(async move {
-        handle_audio_streams(r, channel_init_recv).await
-    });
+    let collate_task =
+        tokio::task::spawn(async move { handle_audio_streams(r, channel_init_recv).await });
 
     info!("starting client");
     let x = tokio::time::timeout(std::time::Duration::from_secs(30), client.start()).await;
@@ -46,25 +47,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Receiver<ChannelSetup>) {
-    let mut channels: Vec<ChannelSetup> = vec![];
-    let (_s, dummy_recv) = mpsc::channel(1);
-    channels.push(ChannelSetup(StreamInfo { user_id: 0, ssrc: 0 }, dummy_recv));
+    let mut tasks: Vec<RecvTask> = vec![];
+    let dummy_task = tokio::task::spawn(async move {
+        futures::future::pending::<()>().await;
+        unreachable!("futures::future::pending should never return")
+    });
+    tasks.push(RecvTask { stream_info: StreamInfo { user_id: 0, ssrc: 0 }, task: dummy_task });
     info!("started handling streams");
 
     loop {
         // let channel_futures = channels.iter_mut().map(|c| c.recv()).collect::<Vec<_>>();
-        let select_future = futures::future::select_all(&mut channels);
+        let select_future = futures::future::select_all(&mut tasks);
         let result = tokio::select! {
             ch_recv = channel_recv.recv() => Ty::Init(ch_recv.expect("oopsie")),
-            st_recv = select_future => Ty::Msg(st_recv.0),
+            st_recv = select_future => Ty::Completed(st_recv.0),
         };
-        match result {
+        let task_result = match result {
             Ty::Init(channel) => {
-                info!(channel=?channel.0, "added new channel");
-                channels.push(channel);
-            },
-            Ty::Msg((info, bytes)) => info!(?info, len=bytes.unwrap().len(), ":3"),
-        }
+                info!(channel=?channel.0, "recieved new channel");
+                let stream_info = channel.0.clone();
+                let task = tokio::task::spawn(async move { handle_stream(channel).await });
+                tasks.push(RecvTask { stream_info, task });
+                continue;
+            }
+            Ty::Completed(task) => task,
+        };
+
+        let info = match task_result {
+            Ok(info) => info,
+            Err(error) => {
+                warn!(?error, "stream handle task exited with error");
+                continue;
+            }
+        };
+
+        let StreamInfo{ ssrc, user_id } = info;
+        info!(?ssrc, ?user_id, "task ended");
         // let ((stream_info, packet), _index, _others) = select_future.await;
         // info!(?stream_info, len=packet.unwrap().len(), "got packet");
     }
@@ -72,12 +90,38 @@ async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Receiv
     info!("done handling streams")
 }
 
-enum Ty {
-    Init(ChannelSetup),
-    Msg((StreamInfo, Option<Vec<i16>>)),
+#[instrument(skip_all)]
+async fn handle_stream(setup: ChannelSetup) -> StreamInfo {
+    let ChannelSetup(StreamInfo { user_id, ssrc }, mut reciever) = setup;
+    info!(?ssrc, user_id, "starting recieve");
+
+    while let Some(packet) = reciever.recv().await {
+        trace!(ssrc, len=packet.len(), "got packet");
+    }
+
+    StreamInfo { user_id, ssrc }
 }
 
-async fn setup_discord_bot() -> Result<(serenity::Client, Reciever, mpsc::Receiver<ChannelSetup>), Box<dyn std::error::Error>> {
+struct RecvTask {
+    stream_info: StreamInfo,
+    task: tokio::task::JoinHandle<StreamInfo>,
+}
+
+impl futures::Future for RecvTask {
+    type Output = Result<StreamInfo, tokio::task::JoinError>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        self.task.try_poll_unpin(cx)
+    }
+}
+
+enum Ty {
+    Init(ChannelSetup),
+    Completed(Result<StreamInfo, tokio::task::JoinError>),
+}
+async fn setup_discord_bot(
+) -> Result<(serenity::Client, Reciever, mpsc::Receiver<ChannelSetup>), Box<dyn std::error::Error>>
+{
     use serenity::prelude::*;
     use songbird::SerenityInit;
     let (s, r) = mpsc::channel(8);
@@ -117,9 +161,18 @@ impl serenity::client::EventHandler for Handler {
         }
 
         let mut handler = handler_lock.lock().await;
-        handler.add_global_event(songbird::CoreEvent::VoicePacket.into(), self.reciever.clone());
-        handler.add_global_event(songbird::CoreEvent::SpeakingUpdate.into(), self.reciever.clone());
-        handler.add_global_event(songbird::CoreEvent::ClientDisconnect.into(), self.reciever.clone());
+        handler.add_global_event(
+            songbird::CoreEvent::VoicePacket.into(),
+            self.reciever.clone(),
+        );
+        handler.add_global_event(
+            songbird::CoreEvent::SpeakingUpdate.into(),
+            self.reciever.clone(),
+        );
+        handler.add_global_event(
+            songbird::CoreEvent::ClientDisconnect.into(),
+            self.reciever.clone(),
+        );
         handler.add_global_event(
             songbird::CoreEvent::SpeakingStateUpdate.into(),
             self.reciever.clone(),
@@ -146,7 +199,10 @@ struct ChannelSetup(StreamInfo, mpsc::Receiver<Vec<i16>>);
 impl futures::Future for ChannelSetup {
     type Output = (StreamInfo, Option<Vec<i16>>);
 
-    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
         self.1.poll_recv(cx).map(|v| (self.0.clone(), v))
     }
 }
@@ -163,16 +219,19 @@ impl Reciever {
             voice_ssrc_map: Arc::new(dashmap::DashMap::new()),
             inverse_ssrc_map: Arc::new(dashmap::DashMap::new()),
             ssrc_to_sender_map: Arc::new(dashmap::DashMap::new()),
-            new_channel_send: Arc::new(sender)
+            new_channel_send: Arc::new(sender),
         }
     }
 
     async fn add_user_with_ssrc(&self, ssrc: u32, user_id: u64) {
         self.voice_ssrc_map.insert(ssrc, user_id);
         self.inverse_ssrc_map.insert(user_id, ssrc);
-        
+
         let (sender, reciever) = mpsc::channel(128);
-        self.new_channel_send.send(ChannelSetup(StreamInfo { user_id, ssrc }, reciever)).await.unwrap();
+        self.new_channel_send
+            .send(ChannelSetup(StreamInfo { user_id, ssrc }, reciever))
+            .await
+            .unwrap();
         self.ssrc_to_sender_map.insert(ssrc, sender);
     }
 
@@ -212,7 +271,8 @@ impl songbird::EventHandler for Reciever {
         match ctx {
             songbird::EventContext::SpeakingStateUpdate(event) => {
                 trace!(?event, "speaking state update");
-                self.add_user_with_ssrc(event.ssrc, event.user_id.unwrap().0).await;
+                self.add_user_with_ssrc(event.ssrc, event.user_id.unwrap().0)
+                    .await;
             }
             songbird::EventContext::VoicePacket(pckt) => {
                 if let Some(pcm) = pckt.audio {
@@ -231,6 +291,8 @@ impl songbird::EventHandler for Reciever {
                     if let Some(sender) = sender {
                         let sender = sender.value();
                         sender.send(pcm.to_owned()).await.expect("oopsie 2");
+                    } else {
+                        trace!(srrc=pckt.packet.ssrc, "dropped packet as no linked speaker")
                     }
                     // trace!(?user_id_string, ?silent, len = pcm.len(), "got audio packet");
                 }
