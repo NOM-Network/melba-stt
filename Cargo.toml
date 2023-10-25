@@ -10,7 +10,9 @@ candle-core = "0.3.0"
 candle-nn = "0.3.0"
 candle-transformers = "0.3.0"
 dashmap = "5.5.3"
+futures = "0.3.28"
 hf-hub = { version = "0.3.2", features = ["tokio"] }
+samplerate = "0.2.4"
 serenity = { version = "0.11.6", default-features = false, features = [
     "builder",
     "cache",
