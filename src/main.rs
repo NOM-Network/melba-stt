@@ -4,8 +4,8 @@ use actual_discord_stt::nn::NnPaths;
 
 use futures::TryFutureExt;
 use serenity::async_trait;
-use tokio::sync::mpsc;
 use thiserror::Error;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 #[tokio::main]
@@ -44,7 +44,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ = handle_streams_task => (),
     }
     info!("done");
-    
 
     Ok(())
 }
@@ -55,7 +54,13 @@ async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Receiv
         futures::future::pending::<()>().await;
         unreachable!("futures::future::pending should never return")
     });
-    tasks.push(RecvTask { stream_info: StreamInfo { user_id: 0, ssrc: 0 }, task: dummy_task });
+    tasks.push(RecvTask {
+        stream_info: StreamInfo {
+            user_id: 0,
+            ssrc: 0,
+        },
+        task: dummy_task,
+    });
     info!("started handling streams");
 
     loop {
@@ -86,7 +91,7 @@ async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Receiv
 
         tasks.retain(|recv| recv.stream_info != info);
 
-        let StreamInfo{ ssrc, user_id } = info;
+        let StreamInfo { ssrc, user_id } = info;
         info!(?ssrc, ?user_id, "task ended");
         // let ((stream_info, packet), _index, _others) = select_future.await;
         // info!(?stream_info, len=packet.unwrap().len(), "got packet");
@@ -99,25 +104,29 @@ async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Receiv
 async fn handle_stream(setup: ChannelSetup) -> StreamInfo {
     let ChannelSetup(StreamInfo { user_id, ssrc }, mut reciever) = setup;
     info!(ssrc, user_id, "starting recieve");
-    let mut buffer = Vec::with_capacity((10000 / 20) * 48_000);  // pre-allocate space for roughly 10s of speech
+    let mut buffer = Vec::with_capacity((10000 / 20) * 48_000); // pre-allocate space for roughly 10s of speech
 
     loop {
         let side = tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => StreamSide::Silence,
             audio = reciever.recv() => StreamSide::Audio(audio),
-        }; 
+        };
 
         match side {
             StreamSide::Silence => {
                 if buffer.is_empty() {
                     continue;
                 }
-                todo!("submit audio to be processed");
-            },
+                let out_buffer = Vec::from_iter(buffer.drain(..));
+                info!(len = out_buffer.len(), "submitting audio");
+                // todo!("submit audio to be processed");
+                let processed_text = process_buffer(out_buffer).await;
+                info!(text=?processed_text, "processed result");
+            }
             StreamSide::Audio(audio) => {
                 if let Some(mut audio) = audio {
                     buffer.append(&mut audio);
-                    trace!(buffer_len=buffer.len(), "appeneded")
+                    trace!(buffer_len = buffer.len(), "appeneded")
                 } else {
                     debug!(ssrc, user_id, "recieve stream closed");
                     break;
@@ -129,9 +138,41 @@ async fn handle_stream(setup: ChannelSetup) -> StreamInfo {
     StreamInfo { user_id, ssrc }
 }
 
+async fn process_buffer(buffer: Vec<i16>) -> String {
+    let (to_thread_send, mut to_thread_recv) =
+        mpsc::channel::<(Vec<i16>, oneshot::Sender<String>)>(1);
+    let (from_thread_send, from_thread_recv) = oneshot::channel::<String>();
+
+    let _thread = std::thread::spawn(move || {
+        while let Some((data, responder)) = to_thread_recv.blocking_recv() {
+            let result = samplerate::convert(
+                48_000,
+                16_000,
+                1,
+                samplerate::ConverterType::SincFastest,
+                data.into_iter()
+                    .map(|v| v as f32 / i16::MAX as f32)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            );
+            let p_result = result.map(|result| result.len());
+            debug!(?p_result, "resampled auio");
+            responder.send(":3".to_string()).unwrap();
+        }
+    });
+
+    to_thread_send
+        .send((buffer, from_thread_send))
+        .await
+        .unwrap();
+    let speech = from_thread_recv.await.unwrap();
+
+    speech
+}
+
 enum StreamSide {
     Silence,
-    Audio(Option<Vec<i16>>)
+    Audio(Option<Vec<i16>>),
 }
 
 struct RecvTask {
@@ -142,7 +183,10 @@ struct RecvTask {
 impl futures::Future for RecvTask {
     type Output = Result<StreamInfo, tokio::task::JoinError>;
 
-    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
         self.task.try_poll_unpin(cx)
     }
 }
@@ -324,7 +368,10 @@ impl songbird::EventHandler for Reciever {
                         let sender = sender.value();
                         sender.send(pcm.to_owned()).await.expect("oopsie 2");
                     } else {
-                        trace!(srrc=pckt.packet.ssrc, "dropped packet as no linked speaker")
+                        trace!(
+                            srrc = pckt.packet.ssrc,
+                            "dropped packet as no linked speaker"
+                        )
                     }
                     // trace!(?user_id_string, ?silent, len = pcm.len(), "got audio packet");
                 }
