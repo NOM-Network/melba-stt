@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actual_discord_stt::{nn::NnPaths, discord::setup_discord_bot, audio::handle_audio_streams};
+use actual_discord_stt::{nn::{NnPaths, ModelContainer}, discord::{setup_discord_bot, CompletedMessage}, audio::handle_audio_streams};
 
 use futures::TryFutureExt;
 use serenity::async_trait;
@@ -32,16 +32,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(?nn_paths, "got paths");
 
-    let (mut client, r, channel_init_recv) = setup_discord_bot().await?;
+    let (mut client, _, channel_init_recv) = setup_discord_bot().await?;
+
+    let model = ();
+    let model = ModelContainer::new(model);
+
+    let (completed_messages_send, mut completed_messages_recv) = tokio::sync::mpsc::channel::<CompletedMessage>(16);
 
     let handle_streams_task =
-        tokio::task::spawn(async move { handle_audio_streams(r, channel_init_recv).await });
+        tokio::task::spawn(async move { handle_audio_streams(model, channel_init_recv, completed_messages_send).await });
+
+    let debug_print_task = tokio::task::spawn(async move {
+        while let Some(msg) = completed_messages_recv.recv().await {
+            info!(who=?msg.who, content=msg.message, "completed message");
+        }
+    });
 
     let timeout_fut = tokio::time::timeout(std::time::Duration::from_secs(30), client.start());
     info!("starting client");
     tokio::select! {
         _ = timeout_fut => (),
         _ = handle_streams_task => (),
+        _ = debug_print_task => (),
     }
     info!("done");
 

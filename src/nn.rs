@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use tracing::instrument;
 
@@ -26,5 +26,20 @@ impl NnPaths {
             tokenizer,
             model,
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct ModelContainer {
+    inner: Arc<()>,
+}
+
+impl ModelContainer {
+    pub fn new(inner: ()) -> Self {
+        Self { inner: Arc::new(()) }
+    }
+
+    pub fn predict(&self, data: Vec<f32>) -> String {
+        "some text goes here".to_string()
     }
 }

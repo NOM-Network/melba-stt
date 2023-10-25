@@ -2,16 +2,22 @@ use std::sync::Arc;
 
 use futures::TryFutureExt;
 use serenity::async_trait;
-use tracing::{debug, error, info, instrument, trace, warn};
 use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::discord::Reciever;
+use crate::{
+    discord::{CompletedMessage, Reciever},
+    nn::ModelContainer,
+};
 
 pub const DISCORD_VOICE_SAMPLERATE_HZ: usize = 48_000;
 pub const WHISPER_SAMPLERATE_HZ: usize = 16_000;
 
-
-pub async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Receiver<ChannelSetup>) {
+pub async fn handle_audio_streams(
+    model: ModelContainer,
+    mut channel_recv: mpsc::Receiver<ChannelSetup>,
+    completed_message_send: mpsc::Sender<CompletedMessage>,
+) {
     let mut tasks: Vec<RecvTask> = vec![];
     let dummy_task = tokio::task::spawn(async move {
         futures::future::pending::<()>().await;
@@ -35,9 +41,13 @@ pub async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Re
         };
         let task_result = match result {
             Ty::Init(channel) => {
-                info!(channel=?channel.0, "recieved new channel");
-                let stream_info = channel.0.clone();
-                let task = tokio::task::spawn(async move { handle_stream(channel).await });
+                // info!(channel=?channel.0, "recieved new channel");
+                let stream_info = channel.info.clone();
+                let completed_messages = completed_message_send.clone();
+                let model = model.clone();
+                let task = tokio::task::spawn(async move {
+                    handle_stream(channel, completed_messages, model).await
+                });
                 tasks.push(RecvTask { stream_info, task });
                 continue;
             }
@@ -59,20 +69,25 @@ pub async fn handle_audio_streams(reciever: Reciever, mut channel_recv: mpsc::Re
         // let ((stream_info, packet), _index, _others) = select_future.await;
         // info!(?stream_info, len=packet.unwrap().len(), "got packet");
     }
-
-    info!("done handling streams")
 }
 
 #[instrument(skip_all)]
-async fn handle_stream(setup: ChannelSetup) -> StreamInfo {
-    let ChannelSetup(StreamInfo { user_id, ssrc }, mut reciever) = setup;
+async fn handle_stream(
+    setup: ChannelSetup,
+    completed_message_send: mpsc::Sender<CompletedMessage>,
+    model: ModelContainer,
+) -> StreamInfo {
+    let ChannelSetup {
+        info: StreamInfo { user_id, ssrc },
+        mut pcm_data_recv,
+    } = setup;
     info!(ssrc, user_id, "starting recieve");
     let mut buffer = Vec::with_capacity((10000 / 20) * DISCORD_VOICE_SAMPLERATE_HZ); // pre-allocate space for roughly 10s of speech
 
     loop {
         let side = tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => StreamSide::Silence,
-            audio = reciever.recv() => StreamSide::Audio(audio),
+            audio = pcm_data_recv.recv() => StreamSide::Audio(audio),
         };
 
         match side {
@@ -83,8 +98,15 @@ async fn handle_stream(setup: ChannelSetup) -> StreamInfo {
                 let out_buffer = Vec::from_iter(buffer.drain(..));
                 info!(len = out_buffer.len(), "submitting audio");
                 // todo!("submit audio to be processed");
-                let processed_text = process_buffer(out_buffer).await;
-                info!(text=?processed_text, "processed result");
+                let processed_text = process_buffer(out_buffer, model.clone()).await;
+                // info!(text=?processed_text, "processed result");
+                completed_message_send
+                    .send(CompletedMessage {
+                        message: processed_text,
+                        who: setup.info.clone(),
+                    })
+                    .await
+                    .unwrap();
             }
             StreamSide::Audio(audio) => {
                 if let Some(mut audio) = audio {
@@ -101,36 +123,33 @@ async fn handle_stream(setup: ChannelSetup) -> StreamInfo {
     StreamInfo { user_id, ssrc }
 }
 
-async fn process_buffer(buffer: Vec<i16>) -> String {
-    let (to_thread_send, mut to_thread_recv) =
-        mpsc::channel::<(Vec<i16>, oneshot::Sender<String>)>(1);
+async fn process_buffer(buffer: Vec<i16>, model: ModelContainer) -> String {
     let (from_thread_send, from_thread_recv) = oneshot::channel::<String>();
 
     let _thread = std::thread::spawn(move || {
-        while let Some((data, responder)) = to_thread_recv.blocking_recv() {
-            let result = samplerate::convert(
-                DISCORD_VOICE_SAMPLERATE_HZ as u32,
-                WHISPER_SAMPLERATE_HZ as u32,
-                1,
-                samplerate::ConverterType::SincFastest,
-                data.into_iter()
-                    .map(|v| v as f32 / i16::MAX as f32)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            );
-            let p_result = result.map(|result| result.len());
-            debug!(?p_result, "resampled auio");
-            responder.send(":3".to_string()).unwrap();
-        }
+        sync_process_buffer(from_thread_send, buffer, model);
     });
 
-    to_thread_send
-        .send((buffer, from_thread_send))
-        .await
-        .unwrap();
     let speech = from_thread_recv.await.unwrap();
 
     speech
+}
+
+fn sync_process_buffer(responder: oneshot::Sender<String>, buffer: Vec<i16>, model: ModelContainer) {
+    let result = samplerate::convert(
+        DISCORD_VOICE_SAMPLERATE_HZ as u32,
+        WHISPER_SAMPLERATE_HZ as u32,
+        1,
+        samplerate::ConverterType::SincFastest,
+        buffer.into_iter()
+            .map(|v| v as f32 / i16::MAX as f32)
+            .collect::<Vec<_>>()
+            .as_slice(),
+    );
+    // let p_result = result.map(|result| result.len());
+    // debug!(?p_result, "resampled auio");
+    let prediction = model.predict(result.unwrap());
+    responder.send(prediction).unwrap();
 }
 
 pub enum StreamSide {
@@ -159,7 +178,10 @@ pub enum Ty {
     Completed(Result<StreamInfo, tokio::task::JoinError>),
 }
 
-pub struct ChannelSetup(pub StreamInfo, pub mpsc::Receiver<Vec<i16>>);
+pub struct ChannelSetup {
+    pub info: StreamInfo,
+    pub pcm_data_recv: mpsc::Receiver<Vec<i16>>,
+}
 
 impl futures::Future for ChannelSetup {
     type Output = (StreamInfo, Option<Vec<i16>>);
@@ -168,7 +190,9 @@ impl futures::Future for ChannelSetup {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        self.1.poll_recv(cx).map(|v| (self.0.clone(), v))
+        self.pcm_data_recv
+            .poll_recv(cx)
+            .map(|v| (self.info.clone(), v))
     }
 }
 

@@ -71,18 +71,18 @@ impl serenity::client::EventHandler for Handler {
 pub struct Reciever {
     voice_ssrc_map: Arc<dashmap::DashMap<u32, u64>>,
     inverse_ssrc_map: Arc<dashmap::DashMap<u64, u32>>,
-    new_channel_send: Arc<mpsc::Sender<ChannelSetup>>,
     ssrc_to_sender_map: Arc<dashmap::DashMap<u32, mpsc::Sender<Vec<i16>>>>,
+    new_channel_send: Arc<mpsc::Sender<ChannelSetup>>,
 }
 
 
 impl Reciever {
-    fn new(sender: mpsc::Sender<ChannelSetup>) -> Self {
+    fn new(setup_sender: mpsc::Sender<ChannelSetup>) -> Self {
         Self {
             voice_ssrc_map: Arc::new(dashmap::DashMap::new()),
             inverse_ssrc_map: Arc::new(dashmap::DashMap::new()),
             ssrc_to_sender_map: Arc::new(dashmap::DashMap::new()),
-            new_channel_send: Arc::new(sender),
+            new_channel_send: Arc::new(setup_sender),
         }
     }
 
@@ -92,7 +92,7 @@ impl Reciever {
 
         let (sender, reciever) = mpsc::channel(128);
         self.new_channel_send
-            .send(ChannelSetup(StreamInfo { user_id, ssrc }, reciever))
+            .send(ChannelSetup { info: StreamInfo { user_id, ssrc }, pcm_data_recv: reciever })
             .await
             .unwrap();
         self.ssrc_to_sender_map.insert(ssrc, sender);
@@ -177,4 +177,10 @@ impl songbird::EventHandler for Reciever {
 
         None
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletedMessage {
+    pub message: String,
+    pub who: StreamInfo,
 }
