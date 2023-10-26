@@ -4,14 +4,14 @@ use melba_stt::{
     audio::handle_audio_streams,
     config,
     discord::{setup_discord_bot, CompletedMessage},
-    nn::{self, ModelContainer, NnPaths},
+    nn::{self},
 };
 
-use futures::TryFutureExt;
-use serenity::async_trait;
-use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, instrument, trace, warn};
+
+
+
+
+use tracing::{debug, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

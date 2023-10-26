@@ -1,10 +1,10 @@
 pub mod model;
 pub mod w_reimpl;
 
-use std::{path::PathBuf, sync::{Arc, Mutex}};
+use std::{path::PathBuf, sync::{Arc}};
 
 use candle_transformers::models::whisper;
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
 
 pub async fn get_model(

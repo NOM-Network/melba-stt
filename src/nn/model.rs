@@ -5,7 +5,7 @@ use candle_nn::ops::softmax;
 use candle_transformers::models::whisper;
 use rand::{SeedableRng, prelude::Distribution};
 
-use tracing::{debug, error, info, instrument, trace, warn, trace_span};
+use tracing::{debug, info, instrument, trace, warn, trace_span};
 
 use super::w_reimpl;
 

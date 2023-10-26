@@ -1,12 +1,12 @@
-use std::sync::Arc;
+
 
 use futures::TryFutureExt;
-use serenity::async_trait;
+
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 use crate::{
-    discord::{CompletedMessage, Reciever},
+    discord::{CompletedMessage},
     nn::{ModelContainer, model::Segment},
 };
 

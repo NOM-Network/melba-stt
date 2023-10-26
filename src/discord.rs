@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serenity::async_trait;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace};
 
 use crate::{
     audio::{ChannelSetup, StreamInfo},
