@@ -27,6 +27,7 @@ pub async fn setup_discord_bot(
         .event_handler(Handler {
             reciever: reciever.clone(),
             config: config.clone(),
+            call: tokio::sync::Mutex::new(None),
         })
         .register_songbird_from_config(songbird_config)
         .await?;
@@ -37,6 +38,7 @@ pub async fn setup_discord_bot(
 struct Handler {
     reciever: Reciever,
     config: Arc<SttConfig>,
+    call: tokio::sync::Mutex<Option<Arc<serenity::prelude::Mutex<songbird::Call>>>>,
 }
 
 #[async_trait]
@@ -72,6 +74,10 @@ impl serenity::client::EventHandler for Handler {
             songbird::CoreEvent::SpeakingStateUpdate.into(),
             self.reciever.clone(),
         );
+        drop(handler);
+
+        let mut inner_call = self.call.lock().await;
+        *inner_call = Some(handler_lock);
     }
 }
 

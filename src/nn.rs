@@ -1,4 +1,5 @@
 pub mod model;
+pub mod w_reimpl;
 
 use std::{path::PathBuf, sync::{Arc, Mutex}};
 
@@ -21,7 +22,7 @@ pub async fn get_model(
     let varbuilder = load_model_file_to_varbuilder(nn_paths.model, &device)?;
 
     let lang_token = tokenizer.token_to_id("<|en|>");
-    let m = whisper::model::Whisper::load(&varbuilder, config)?;
+    let m = w_reimpl::Whisper::load(&varbuilder, config)?;
     let d = model::Decoder::new(m, device.clone(), tokenizer, 0, lang_token)?;
 
     Ok(ModelContainer::new(d, device.clone(), mel_filters))
@@ -82,7 +83,7 @@ impl NnPaths {
 
 #[derive(Clone)]
 pub struct ModelContainer {
-    inner: Arc<Mutex<model::Decoder>>,
+    inner: Arc<model::Decoder>,
     device: candle_core::Device,
     mel_filters: Vec<f32>,
 }
@@ -90,7 +91,7 @@ pub struct ModelContainer {
 impl ModelContainer {
     pub fn new(inner: model::Decoder, device: candle_core::Device, mel_filters: Vec<f32>) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(inner)),
+            inner: Arc::new(inner),
             device,
             mel_filters,
         }
@@ -100,7 +101,7 @@ impl ModelContainer {
         let mel = whisper::audio::pcm_to_mel(&data, &self.mel_filters);
         let mel_len = mel.len();
         let mel = candle_core::Tensor::from_vec(mel, (1, whisper::N_MELS, mel_len / whisper::N_MELS), &self.device).unwrap();
-        let mut model = self.inner.lock().unwrap();
-        model.run(&mel).unwrap()
+        // let mut model = self.inner.lock().unwrap();
+        self.inner.run(&mel).unwrap()
     }
 }

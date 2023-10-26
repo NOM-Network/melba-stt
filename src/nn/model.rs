@@ -1,9 +1,13 @@
+use std::sync::Mutex;
+
 use candle_core::IndexOp;
 use candle_nn::ops::softmax;
 use candle_transformers::models::whisper;
 use rand::{SeedableRng, prelude::Distribution};
 
 use tracing::{debug, error, info, instrument, trace, warn, trace_span};
+
+use super::w_reimpl;
 
 #[derive(Debug, Clone)]
 pub struct DecodingResult {
@@ -23,8 +27,8 @@ pub struct Segment {
 }
 
 pub struct Decoder {
-    model: whisper::model::Whisper,
-    rng: rand::rngs::StdRng,
+    model: w_reimpl::Whisper,
+    rng: Mutex<rand::rngs::StdRng>,
     tokenizer: tokenizers::Tokenizer,
     suppress_tokens: candle_core::Tensor,
     sot_token: u32,
@@ -38,7 +42,7 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new(
-        model: whisper::model::Whisper,
+        model: w_reimpl::Whisper,
         device: candle_core::Device,
         tokenizer: tokenizers::Tokenizer,
         seed: u64,
@@ -63,7 +67,7 @@ impl Decoder {
 
         Ok(Self {
             model,
-            rng: rand::rngs::StdRng::seed_from_u64(seed),
+            rng: Mutex::new(rand::rngs::StdRng::seed_from_u64(seed)),
             tokenizer,
             suppress_tokens,
             sot_token,
@@ -78,15 +82,14 @@ impl Decoder {
 
     #[instrument(skip_all)]
     fn decode(
-        &mut self,
+        &self,
         mel: &candle_core::Tensor,
         t: f64,
     ) -> Result<DecodingResult, Box<dyn std::error::Error>> {
-        let model = &mut self.model;
         let st = std::time::Instant::now();
-        let audio_features = model.encoder.forward(mel, true)?;
+        let audio_features = self.model.encoder.forward(mel, true)?;
         trace!(elapsed=?st.elapsed(), "audio features: {:?}", audio_features.dims());
-        let sample_len = model.config.max_target_positions / 2;
+        let sample_len = self.model.config.max_target_positions / 2;
         let mut sum_logprob = 0f64;
         let mut no_speech_prob = f64::NAN;
         let mut tokens = vec![self.sot_token];
@@ -105,14 +108,14 @@ impl Decoder {
             // it so we add it at this point.
             let fw_st = std::time::Instant::now();
             let tokens_t = tokens_t.unsqueeze(0)?;
-            let ys = model.decoder.forward(&tokens_t, &audio_features, i == 0)?;
+            let ys = self.model.decoder.forward(&tokens_t, &audio_features, i == 0)?;
             let fw_dur = fw_st.elapsed();
 
             let nsp_start = std::time::Instant::now();
             // Extract the no speech probability on the first iteration by looking at the first
             // token logits and the probability for the according token.
             if i == 0 {
-                let logits = model.decoder.final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
+                let logits = self.model.decoder.final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
                 no_speech_prob = candle_nn::ops::softmax(&logits, 0)?
                     .i(self.no_speech_token as usize)?
                     .to_scalar::<f32>()? as f64;
@@ -121,7 +124,7 @@ impl Decoder {
 
             let idk_st = std::time::Instant::now();
             let (_, seq_len, _) = ys.dims3()?;
-            let logits = model
+            let logits = self.model
                 .decoder
                 .final_linear(&ys.i((..1, seq_len - 1..))?)?
                 .i(0)?
@@ -138,7 +141,8 @@ impl Decoder {
                 let prs = softmax(&(&logits / t)?, 0)?;
                 let logits_v: Vec<f32> = prs.to_vec1()?;
                 let distr = rand::distributions::WeightedIndex::new(&logits_v)?;
-                distr.sample(&mut self.rng) as u32
+                let mut rng = self.rng.lock().unwrap();
+                distr.sample(&mut *rng) as u32
             } else {
                 let logits_v: Vec<f32> = logits.to_vec1()?;
                 logits_v
@@ -161,7 +165,7 @@ impl Decoder {
             let prob = softmax(&logits, candle_core::D::Minus1)?
                 .i(next_token as usize)?
                 .to_scalar::<f32>()? as f64;
-            if next_token == self.eot_token || tokens.len() > model.config.max_target_positions {
+            if next_token == self.eot_token || tokens.len() > self.model.config.max_target_positions {
                 break;
             }
             sum_logprob += prob.ln();
@@ -181,7 +185,7 @@ impl Decoder {
 
     #[instrument(skip_all)]
     fn decode_with_fallback(
-        &mut self,
+        &self,
         segment: &candle_core::Tensor,
     ) -> Result<DecodingResult, Box<dyn std::error::Error>> {
         for (i, &t) in whisper::TEMPERATURES.iter().enumerate() {
@@ -209,7 +213,7 @@ impl Decoder {
     }
 
     pub fn run(
-        &mut self,
+        &self,
         mel: &candle_core::Tensor,
     ) -> Result<Vec<Segment>, Box<dyn std::error::Error>> {
         let (_, _, content_frames) = mel.dims3()?;
