@@ -1,10 +1,14 @@
 use std::sync::Mutex;
 
-use candle_core::{Tensor, Device, D, Module, IndexOp};
-use candle_nn::{Conv1d, VarBuilder, Embedding, Conv1dConfig, LayerNorm};
+use candle_core::{Device, IndexOp, Module, Tensor, D};
+use candle_nn::{Conv1d, Conv1dConfig, Embedding, LayerNorm, VarBuilder};
 use candle_transformers::models::whisper::Config;
 
-fn embedding(vocab_size: usize, hidden_size: usize, vb: VarBuilder) -> Result<Embedding, Box<dyn std::error::Error>> {
+fn embedding(
+    vocab_size: usize,
+    hidden_size: usize,
+    vb: VarBuilder,
+) -> Result<Embedding, Box<dyn std::error::Error>> {
     let embeddings = vb.get((vocab_size, hidden_size), "weight")?;
     Ok(Embedding::new(embeddings, hidden_size))
 }
@@ -76,7 +80,11 @@ struct MultiHeadAttention {
 }
 
 impl MultiHeadAttention {
-    fn load(n_state: usize, n_head: usize, vb: VarBuilder) -> Result<Self, Box<dyn std::error::Error>> {
+    fn load(
+        n_state: usize,
+        n_head: usize,
+        vb: VarBuilder,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let span = tracing::span!(tracing::Level::TRACE, "multi-head-attn");
         let softmax_span = tracing::span!(tracing::Level::TRACE, "multi-head-attn-softmax");
         let matmul_span = tracing::span!(tracing::Level::TRACE, "multi-head-attn-matmul");
@@ -134,7 +142,9 @@ impl MultiHeadAttention {
     fn reshape_head(&self, x: &Tensor) -> Result<Tensor, Box<dyn std::error::Error>> {
         let (n_batch, n_ctx, n_state) = x.dims3()?;
         let target_dims = &[n_batch, n_ctx, self.n_head, n_state / self.n_head];
-        x.reshape(target_dims)?.transpose(1, 2).map_err(|e| e.into())
+        x.reshape(target_dims)?
+            .transpose(1, 2)
+            .map_err(|e| e.into())
     }
 
     fn qkv_attention(
@@ -183,7 +193,12 @@ struct ResidualAttentionBlock {
 }
 
 impl ResidualAttentionBlock {
-    fn load(n_state: usize, n_head: usize, ca: bool, vb: VarBuilder) -> Result<Self, Box<dyn std::error::Error>> {
+    fn load(
+        n_state: usize,
+        n_head: usize,
+        ca: bool,
+        vb: VarBuilder,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let span = tracing::span!(tracing::Level::TRACE, "residual-attn");
         let attn = MultiHeadAttention::load(n_state, n_head, vb.pp("self_attn"))?;
         let attn_ln = layer_norm(n_state, vb.pp("self_attn_layer_norm"))?;
@@ -303,7 +318,11 @@ impl AudioEncoder {
         })
     }
 
-    pub fn forward(&self, x: &Tensor, flush_kv_cache: bool) -> Result<Tensor, Box<dyn std::error::Error>> {
+    pub fn forward(
+        &self,
+        x: &Tensor,
+        flush_kv_cache: bool,
+    ) -> Result<Tensor, Box<dyn std::error::Error>> {
         let _enter = self.span.enter();
         let x = {
             let _enter = self.conv1_span.enter();
@@ -367,7 +386,12 @@ impl TextDecoder {
         })
     }
 
-    pub fn forward(&self, x: &Tensor, xa: &Tensor, flush_kv_cache: bool) -> Result<Tensor, Box<dyn std::error::Error>> {
+    pub fn forward(
+        &self,
+        x: &Tensor,
+        xa: &Tensor,
+        flush_kv_cache: bool,
+    ) -> Result<Tensor, Box<dyn std::error::Error>> {
         let _enter = self.span.enter();
         let last = x.dim(D::Minus1)?;
         let token_embedding = self.token_embedding.forward(x)?;

@@ -1,5 +1,3 @@
-
-
 use serde::Deserialize;
 
 type Snowflake = u64;

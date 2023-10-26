@@ -3,9 +3,9 @@ use std::sync::Mutex;
 use candle_core::IndexOp;
 use candle_nn::ops::softmax;
 use candle_transformers::models::whisper;
-use rand::{SeedableRng, prelude::Distribution};
+use rand::{prelude::Distribution, SeedableRng};
 
-use tracing::{debug, info, instrument, trace, warn, trace_span};
+use tracing::{debug, info, instrument, trace, trace_span, warn};
 
 use super::w_reimpl;
 
@@ -108,7 +108,10 @@ impl Decoder {
             // it so we add it at this point.
             let fw_st = std::time::Instant::now();
             let tokens_t = tokens_t.unsqueeze(0)?;
-            let ys = self.model.decoder.forward(&tokens_t, &audio_features, i == 0)?;
+            let ys = self
+                .model
+                .decoder
+                .forward(&tokens_t, &audio_features, i == 0)?;
             let fw_dur = fw_st.elapsed();
 
             let nsp_start = std::time::Instant::now();
@@ -124,7 +127,8 @@ impl Decoder {
 
             let idk_st = std::time::Instant::now();
             let (_, seq_len, _) = ys.dims3()?;
-            let logits = self.model
+            let logits = self
+                .model
                 .decoder
                 .final_linear(&ys.i((..1, seq_len - 1..))?)?
                 .i(0)?
@@ -165,7 +169,8 @@ impl Decoder {
             let prob = softmax(&logits, candle_core::D::Minus1)?
                 .i(next_token as usize)?
                 .to_scalar::<f32>()? as f64;
-            if next_token == self.eot_token || tokens.len() > self.model.config.max_target_positions {
+            if next_token == self.eot_token || tokens.len() > self.model.config.max_target_positions
+            {
                 break;
             }
             sum_logprob += prob.ln();

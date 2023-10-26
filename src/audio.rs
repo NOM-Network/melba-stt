@@ -1,13 +1,11 @@
-
-
 use futures::TryFutureExt;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, instrument, trace, warn};
 
 use crate::{
-    discord::{CompletedMessage},
-    nn::{ModelContainer, model::Segment},
+    discord::CompletedMessage,
+    nn::{model::Segment, ModelContainer},
 };
 
 pub const DISCORD_VOICE_SAMPLERATE_HZ: usize = 48_000;
@@ -140,13 +138,18 @@ async fn process_buffer(buffer: Vec<i16>, model: ModelContainer) -> Vec<Segment>
     speech
 }
 
-fn sync_process_buffer(responder: oneshot::Sender<Vec<Segment>>, buffer: Vec<i16>, model: ModelContainer) {
+fn sync_process_buffer(
+    responder: oneshot::Sender<Vec<Segment>>,
+    buffer: Vec<i16>,
+    model: ModelContainer,
+) {
     let result = samplerate::convert(
         DISCORD_VOICE_SAMPLERATE_HZ as u32,
         WHISPER_SAMPLERATE_HZ as u32,
         1,
         samplerate::ConverterType::SincFastest,
-        buffer.into_iter()
+        buffer
+            .into_iter()
             .map(|v| v as f32 / i16::MAX as f32)
             .collect::<Vec<_>>()
             .as_slice(),

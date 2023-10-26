@@ -1,11 +1,10 @@
 pub mod model;
 pub mod w_reimpl;
 
-use std::{path::PathBuf, sync::{Arc}};
+use std::{path::PathBuf, sync::Arc};
 
 use candle_transformers::models::whisper;
 use tracing::{debug, instrument};
-
 
 pub async fn get_model(
     device: candle_core::Device,
@@ -39,16 +38,20 @@ fn load_config(config_path: PathBuf) -> Result<whisper::Config, Box<dyn std::err
     serde_json::from_str(&config_contents).map_err(|e| e.into())
 }
 
-fn load_mel_filters(filter_bytes: &[u8]) -> Vec<f32>{
+fn load_mel_filters(filter_bytes: &[u8]) -> Vec<f32> {
     filter_bytes
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
         .collect::<Vec<f32>>()
 }
 
-fn load_model_file_to_varbuilder(model_path: PathBuf, device: &candle_core::Device)  -> Result<candle_nn::VarBuilder, Box<dyn std::error::Error>> {
+fn load_model_file_to_varbuilder(
+    model_path: PathBuf,
+    device: &candle_core::Device,
+) -> Result<candle_nn::VarBuilder, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(model_path)?;
-    let varbuilder = candle_nn::VarBuilder::from_buffered_safetensors(bytes, whisper::DTYPE, &device)?;
+    let varbuilder =
+        candle_nn::VarBuilder::from_buffered_safetensors(bytes, whisper::DTYPE, &device)?;
     Ok(varbuilder)
 }
 
@@ -100,7 +103,12 @@ impl ModelContainer {
     pub fn predict(&self, data: Vec<f32>) -> Vec<model::Segment> {
         let mel = whisper::audio::pcm_to_mel(&data, &self.mel_filters);
         let mel_len = mel.len();
-        let mel = candle_core::Tensor::from_vec(mel, (1, whisper::N_MELS, mel_len / whisper::N_MELS), &self.device).unwrap();
+        let mel = candle_core::Tensor::from_vec(
+            mel,
+            (1, whisper::N_MELS, mel_len / whisper::N_MELS),
+            &self.device,
+        )
+        .unwrap();
         // let mut model = self.inner.lock().unwrap();
         self.inner.run(&mel).unwrap()
     }
