@@ -10,6 +10,7 @@ pub struct Secrets {
 #[derive(Debug, Deserialize)]
 pub struct SttConfig {
     pub channel_to_join: Channel,
+    #[serde(default)]
     pub ignored_users: Vec<Snowflake>,
     #[serde(default)]
     pub model: ModelSpec,
