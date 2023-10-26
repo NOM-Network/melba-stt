@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .map(|segment| (segment.dr.no_speech_prob * 1_000_000.0) as i32)
                 .min()
-                .unwrap() as f32
+                .unwrap_or(1_000_000) as f32
                 / 1_000_000.0;
 
             let contents = msg
