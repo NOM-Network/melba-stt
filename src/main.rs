@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actual_discord_stt::{
+use melba_stt::{
     audio::handle_audio_streams,
     config,
     discord::{setup_discord_bot, CompletedMessage},
