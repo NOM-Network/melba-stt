@@ -1,3 +1,4 @@
 /target
 .vscode
 secrets.toml
+bot.toml

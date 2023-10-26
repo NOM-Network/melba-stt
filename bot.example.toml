@@ -1,0 +1,8 @@
+# the long numbers seen in here are discord snowflakes, and can be gotten in the 
+# client by enabling developer mode in advanced settings, then right clicking on
+# the corresponding entity (e.g. right click on a user to copy their id)
+
+# the channel the bot should attempt to join at startup
+channel_to_join = { guild_id = 574720535888396288, channel_id = 1063254870775312434 }
+# the following discord user ids should be ignored, and will not have audio transcribed when they speak
+ignored_users = [183249892712513536]
