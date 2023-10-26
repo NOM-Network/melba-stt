@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use actual_discord_stt::{nn::{NnPaths, ModelContainer}, discord::{setup_discord_bot, CompletedMessage}, audio::handle_audio_streams};
+use actual_discord_stt::{
+    audio::handle_audio_streams,
+    discord::{setup_discord_bot, CompletedMessage},
+    nn::{self, ModelContainer, NnPaths},
+};
 
 use futures::TryFutureExt;
 use serenity::async_trait;
@@ -15,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(_) = std::env::var("RUST_LOG") {
         std::env::set_var(
             "RUST_LOG",
-            "trace,rustls=info,ureq=info,tokenizers::tokenizer::serialization=error,serenity=info,tungstenite=info,songbird=info,hyper=info",
+            "debug,rustls=info,ureq=info,tokenizers::tokenizer::serialization=error,serenity=info,tungstenite=info,songbird=info,hyper=info",
         ); //fixme: a bunch of warnings from `tokenizers`
     }
 
@@ -24,31 +28,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let mut hf_api = hf_hub::api::tokio::ApiBuilder::new()
-        .with_token(None)
-        .with_progress(true)
-        .build()?;
-    let nn_paths = NnPaths::get_all(&mut hf_api).await?;
-
-    info!(?nn_paths, "got paths");
+    let device = candle_core::Device::cuda_if_available(0).expect("failed to find device");
+    let model = nn::get_model(device).await?;
 
     let (mut client, _, channel_init_recv) = setup_discord_bot().await?;
 
-    let model = ();
-    let model = ModelContainer::new(model);
+    let (completed_messages_send, mut completed_messages_recv) =
+        tokio::sync::mpsc::channel::<CompletedMessage>(16);
 
-    let (completed_messages_send, mut completed_messages_recv) = tokio::sync::mpsc::channel::<CompletedMessage>(16);
-
-    let handle_streams_task =
-        tokio::task::spawn(async move { handle_audio_streams(model, channel_init_recv, completed_messages_send).await });
+    let handle_streams_task = tokio::task::spawn(async move {
+        handle_audio_streams(model, channel_init_recv, completed_messages_send).await
+    });
 
     let debug_print_task = tokio::task::spawn(async move {
         while let Some(msg) = completed_messages_recv.recv().await {
-            info!(who=?msg.who, content=msg.message, "completed message");
+            // info!(who=?msg.who, content=msg.message, "completed message");
+            let min_no_speech_prob = msg
+                .message
+                .iter()
+                .map(|segment| (segment.dr.no_speech_prob * 1_000_000.0) as i32)
+                .min()
+                .unwrap() as f32
+                / 1_000_000.0;
+
+            let contents = msg
+                .message
+                .iter()
+                .map(|segment| segment.dr.text.to_owned())
+                .collect::<Vec<_>>();
+
+            debug!(min_no_speech_prob, "converted message");
+            if min_no_speech_prob < 0.45 {
+                info!(?contents, ?msg.who, "completed message");
+            } else {
+                debug!(?contents, ?msg.who, "message had high no speech probability")
+            }
         }
     });
 
-    let timeout_fut = tokio::time::timeout(std::time::Duration::from_secs(30), client.start());
+    let timeout_fut = tokio::time::timeout(std::time::Duration::from_secs(600), client.start());
     info!("starting client");
     tokio::select! {
         _ = timeout_fut => (),

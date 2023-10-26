@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use serenity::async_trait;
-use tracing::{debug, error, info, instrument, trace, warn};
 use tokio::sync::mpsc;
+use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::audio::{StreamInfo, ChannelSetup};
+use crate::{audio::{ChannelSetup, StreamInfo}, nn::model::Segment};
 
 pub async fn setup_discord_bot(
 ) -> Result<(serenity::Client, Reciever, mpsc::Receiver<ChannelSetup>), Box<dyn std::error::Error>>
@@ -75,7 +75,6 @@ pub struct Reciever {
     new_channel_send: Arc<mpsc::Sender<ChannelSetup>>,
 }
 
-
 impl Reciever {
     fn new(setup_sender: mpsc::Sender<ChannelSetup>) -> Self {
         Self {
@@ -92,7 +91,10 @@ impl Reciever {
 
         let (sender, reciever) = mpsc::channel(128);
         self.new_channel_send
-            .send(ChannelSetup { info: StreamInfo { user_id, ssrc }, pcm_data_recv: reciever })
+            .send(ChannelSetup {
+                info: StreamInfo { user_id, ssrc },
+                pcm_data_recv: reciever,
+            })
             .await
             .unwrap();
         self.ssrc_to_sender_map.insert(ssrc, sender);
@@ -153,7 +155,10 @@ impl songbird::EventHandler for Reciever {
                     let sender = self.ssrc_to_sender_map.get(&pckt.packet.ssrc);
                     if let Some(sender) = sender {
                         let sender = sender.value();
-                        sender.send(pcm.to_owned()).await.expect("oopsie 2");
+                        sender
+                            .send(pcm.to_owned())
+                            .await
+                            .expect("oopsie 2");
                     } else {
                         trace!(
                             srrc = pckt.packet.ssrc,
@@ -181,6 +186,6 @@ impl songbird::EventHandler for Reciever {
 
 #[derive(Debug, Clone)]
 pub struct CompletedMessage {
-    pub message: String,
+    pub message: Vec<Segment>,
     pub who: StreamInfo,
 }

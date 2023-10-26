@@ -7,7 +7,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
     discord::{CompletedMessage, Reciever},
-    nn::ModelContainer,
+    nn::{ModelContainer, model::Segment},
 };
 
 pub const DISCORD_VOICE_SAMPLERATE_HZ: usize = 48_000;
@@ -109,8 +109,8 @@ async fn handle_stream(
                     .unwrap();
             }
             StreamSide::Audio(audio) => {
-                if let Some(mut audio) = audio {
-                    buffer.append(&mut audio);
+                if let Some(audio) = audio {
+                    buffer.extend(audio.into_iter().step_by(2));
                     trace!(buffer_len = buffer.len(), "appeneded")
                 } else {
                     debug!(ssrc, user_id, "recieve stream closed");
@@ -123,8 +123,8 @@ async fn handle_stream(
     StreamInfo { user_id, ssrc }
 }
 
-async fn process_buffer(buffer: Vec<i16>, model: ModelContainer) -> String {
-    let (from_thread_send, from_thread_recv) = oneshot::channel::<String>();
+async fn process_buffer(buffer: Vec<i16>, model: ModelContainer) -> Vec<Segment> {
+    let (from_thread_send, from_thread_recv) = oneshot::channel::<Vec<Segment>>();
 
     let _thread = std::thread::spawn(move || {
         sync_process_buffer(from_thread_send, buffer, model);
@@ -135,7 +135,7 @@ async fn process_buffer(buffer: Vec<i16>, model: ModelContainer) -> String {
     speech
 }
 
-fn sync_process_buffer(responder: oneshot::Sender<String>, buffer: Vec<i16>, model: ModelContainer) {
+fn sync_process_buffer(responder: oneshot::Sender<Vec<Segment>>, buffer: Vec<i16>, model: ModelContainer) {
     let result = samplerate::convert(
         DISCORD_VOICE_SAMPLERATE_HZ as u32,
         WHISPER_SAMPLERATE_HZ as u32,
