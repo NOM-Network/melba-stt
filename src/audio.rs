@@ -98,15 +98,20 @@ async fn handle_stream(
                 let out_buffer = Vec::from_iter(buffer.drain(..));
                 info!(len = out_buffer.len(), "submitting audio");
                 // todo!("submit audio to be processed");
-                let processed_text = process_buffer(out_buffer, model.clone()).await;
-                // info!(text=?processed_text, "processed result");
-                completed_message_send
-                    .send(CompletedMessage {
-                        message: processed_text,
-                        who: setup.info.clone(),
-                    })
-                    .await
-                    .unwrap();
+                let model = model.clone();
+                let completed_message_send = completed_message_send.clone();
+                let info = setup.info.clone();
+                tokio::task::spawn(async move {
+                    let processed_text = process_buffer(out_buffer, model).await;
+                    // info!(text=?processed_text, "processed result");
+                    completed_message_send
+                        .send(CompletedMessage {
+                            message: processed_text,
+                            who: info,
+                        })
+                        .await
+                        .unwrap();
+                });
             }
             StreamSide::Audio(audio) => {
                 if let Some(audio) = audio {
