@@ -4,34 +4,39 @@ use serenity::async_trait;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::{audio::{ChannelSetup, StreamInfo}, nn::model::Segment};
+use crate::{
+    audio::{ChannelSetup, StreamInfo},
+    config::{self, SttConfig},
+    nn::model::Segment,
+};
 
 pub async fn setup_discord_bot(
+    token: String,
+    config: Arc<SttConfig>,
 ) -> Result<(serenity::Client, Reciever, mpsc::Receiver<ChannelSetup>), Box<dyn std::error::Error>>
 {
     use serenity::prelude::*;
     use songbird::SerenityInit;
     let (s, r) = mpsc::channel(8);
-    let reciever = Reciever::new(s);
+    let reciever = Reciever::new(s, config.clone());
 
     let songbird_config =
         songbird::Config::default().decode_mode(songbird::driver::DecodeMode::Decode);
 
-    let client = Client::builder(
-        include_str!("token.secret"),
-        GatewayIntents::non_privileged(),
-    )
-    .event_handler(Handler {
-        reciever: reciever.clone(),
-    })
-    .register_songbird_from_config(songbird_config)
-    .await?;
+    let client = Client::builder(token, GatewayIntents::non_privileged())
+        .event_handler(Handler {
+            reciever: reciever.clone(),
+            config: config.clone(),
+        })
+        .register_songbird_from_config(songbird_config)
+        .await?;
 
     Ok((client, reciever, r))
 }
 
 struct Handler {
     reciever: Reciever,
+    config: Arc<SttConfig>,
 }
 
 #[async_trait]
@@ -39,8 +44,11 @@ impl serenity::client::EventHandler for Handler {
     async fn ready(&self, ctx: serenity::client::Context, ready: serenity::model::gateway::Ready) {
         info!(event=?ready, "ready");
         let manager = songbird::get(&ctx).await.expect("songbird failed").clone();
-        let (handler_lock, connect_result) =
-            manager.join(647850202430046238, 647850202975174690).await;
+        let config::Channel {
+            guild_id,
+            channel_id,
+        } = self.config.channel_to_join;
+        let (handler_lock, connect_result) = manager.join(guild_id, channel_id).await;
 
         if let Err(error) = connect_result {
             error!(?error, "failed to join voice channel");
@@ -73,16 +81,29 @@ pub struct Reciever {
     inverse_ssrc_map: Arc<dashmap::DashMap<u64, u32>>,
     ssrc_to_sender_map: Arc<dashmap::DashMap<u32, mpsc::Sender<Vec<i16>>>>,
     new_channel_send: Arc<mpsc::Sender<ChannelSetup>>,
+
+    config: Arc<SttConfig>,
 }
 
 impl Reciever {
-    fn new(setup_sender: mpsc::Sender<ChannelSetup>) -> Self {
+    fn new(setup_sender: mpsc::Sender<ChannelSetup>, config: Arc<SttConfig>) -> Self {
         Self {
             voice_ssrc_map: Arc::new(dashmap::DashMap::new()),
             inverse_ssrc_map: Arc::new(dashmap::DashMap::new()),
             ssrc_to_sender_map: Arc::new(dashmap::DashMap::new()),
             new_channel_send: Arc::new(setup_sender),
+            config,
         }
+    }
+
+    async fn is_ssrc_ignored(&self, ssrc: u32) -> bool {
+        let user_id = self.get_user_by_ssrc(ssrc).await;
+        let user_id = match user_id {
+            Some(user_id) => user_id,
+            None => return false,
+        };
+
+        self.config.ignored_users.contains(&user_id)
     }
 
     async fn add_user_with_ssrc(&self, ssrc: u32, user_id: u64) {
@@ -140,32 +161,24 @@ impl songbird::EventHandler for Reciever {
                     .await;
             }
             songbird::EventContext::VoicePacket(pckt) => {
+                if self.is_ssrc_ignored(pckt.packet.ssrc).await {
+                    return None;
+                }
                 if let Some(pcm) = pckt.audio {
-                    // pckt.packet.ssrc
                     if pcm.len() == 0 {
                         debug!(?pckt, "got zero length audio packet");
                     }
-                    let silent = pcm.iter().filter(|item| **item != 0i16).count() == 0;
-                    let user_id = self.get_user_by_ssrc(pckt.packet.ssrc).await;
 
-                    let user_id_string = user_id
-                        .clone()
-                        .map(|user_id| user_id.to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
                     let sender = self.ssrc_to_sender_map.get(&pckt.packet.ssrc);
                     if let Some(sender) = sender {
                         let sender = sender.value();
-                        sender
-                            .send(pcm.to_owned())
-                            .await
-                            .expect("oopsie 2");
+                        sender.send(pcm.to_owned()).await.expect("oopsie 2");
                     } else {
                         trace!(
                             srrc = pckt.packet.ssrc,
                             "dropped packet as no linked speaker"
                         )
                     }
-                    // trace!(?user_id_string, ?silent, len = pcm.len(), "got audio packet");
                 }
             }
             songbird::EventContext::SpeakingUpdate(update) => {

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use actual_discord_stt::{
     audio::handle_audio_streams,
+    config,
     discord::{setup_discord_bot, CompletedMessage},
     nn::{self, ModelContainer, NnPaths},
 };
@@ -19,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(_) = std::env::var("RUST_LOG") {
         std::env::set_var(
             "RUST_LOG",
-            "debug,rustls=info,ureq=info,tokenizers::tokenizer::serialization=error,serenity=info,tungstenite=info,songbird=info,hyper=info",
+            "trace,rustls=info,ureq=info,tokenizers::tokenizer::serialization=error,serenity=info,tungstenite=info,songbird=info,hyper=info",
         ); //fixme: a bunch of warnings from `tokenizers`
     }
 
@@ -28,10 +29,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let config = tokio::fs::read_to_string("bot.toml").await?;
+    let config = toml::from_str::<config::SttConfig>(&config)?;
+    let config = Arc::new(config);
+    let secrets = tokio::fs::read_to_string("secrets.toml").await?;
+    let secrets = toml::from_str::<config::Secrets>(&secrets)?;
+
     let device = candle_core::Device::cuda_if_available(0).expect("failed to find device");
     let model = nn::get_model(device).await?;
 
-    let (mut client, _, channel_init_recv) = setup_discord_bot().await?;
+    let (mut client, _, channel_init_recv) =
+        setup_discord_bot(secrets.discord_token, config.clone()).await?;
 
     let (completed_messages_send, mut completed_messages_recv) =
         tokio::sync::mpsc::channel::<CompletedMessage>(16);

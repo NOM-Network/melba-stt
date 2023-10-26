@@ -10,7 +10,6 @@ pub async fn get_model(
     device: candle_core::Device,
 ) -> Result<ModelContainer, Box<dyn std::error::Error>> {
     let mut hf_api = hf_hub::api::tokio::ApiBuilder::new()
-        .with_token(None)
         .with_progress(true)
         .build()?;
 
