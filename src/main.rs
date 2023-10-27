@@ -71,13 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let timeout_fut = tokio::time::timeout(std::time::Duration::from_secs(600), client.start());
+    let client_fut = client.start();
     info!("starting client");
     tokio::select! {
-        t = timeout_fut => {
-            t.unwrap().unwrap();
-            ()
-        },
+        t = client_fut => t.unwrap(),
         s = handle_streams_task => s.unwrap(),
         p = debug_print_task => p.unwrap(),
     }
