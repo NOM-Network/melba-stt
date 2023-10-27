@@ -1,6 +1,6 @@
 use futures::TryFutureExt;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, broadcast};
 use tracing::{debug, info, instrument, trace, warn};
 
 use crate::{
@@ -14,7 +14,7 @@ pub const WHISPER_SAMPLERATE_HZ: usize = 16_000;
 pub async fn handle_audio_streams(
     model: ModelContainer,
     mut channel_recv: mpsc::Receiver<ChannelSetup>,
-    completed_message_send: mpsc::Sender<CompletedMessage>,
+    completed_message_send: broadcast::Sender<CompletedMessage>,
 ) {
     let mut tasks: Vec<RecvTask> = vec![];
     let dummy_task = tokio::task::spawn(async move {
@@ -72,7 +72,7 @@ pub async fn handle_audio_streams(
 #[instrument(skip_all)]
 async fn handle_stream(
     setup: ChannelSetup,
-    completed_message_send: mpsc::Sender<CompletedMessage>,
+    completed_message_send: broadcast::Sender<CompletedMessage>,
     model: ModelContainer,
 ) -> StreamInfo {
     let ChannelSetup {
@@ -81,6 +81,7 @@ async fn handle_stream(
     } = setup;
     info!(ssrc, user_id, "starting recieve");
     let mut buffer = Vec::with_capacity((10000 / 20) * DISCORD_VOICE_SAMPLERATE_HZ); // pre-allocate space for roughly 10s of speech
+    let mut started_filling_at = None;
 
     loop {
         let side = tokio::select! {
@@ -100,18 +101,24 @@ async fn handle_stream(
                 let completed_message_send = completed_message_send.clone();
                 let info = setup.info.clone();
                 tokio::task::spawn(async move {
+                    let speech_duration = out_buffer.len() as f64 / DISCORD_VOICE_SAMPLERATE_HZ as f64;
                     let processed_text = process_buffer(out_buffer, model).await;
                     // info!(text=?processed_text, "processed result");
                     completed_message_send
                         .send(CompletedMessage {
+                            started_at: started_filling_at.unwrap(),
+                            speech_duration: std::time::Duration::from_secs_f64(speech_duration),
                             message: processed_text,
                             who: info,
                         })
-                        .await
                         .unwrap();
                 });
+                started_filling_at = None;
             }
             StreamSide::Audio(audio) => {
+                if let None = started_filling_at {
+                    started_filling_at = Some(time::OffsetDateTime::now_utc());
+                }
                 if let Some(audio) = audio {
                     buffer.extend(audio.into_iter().step_by(2));
                     trace!(buffer_len = buffer.len(), "appeneded")
@@ -208,4 +215,19 @@ impl futures::Future for ChannelSetup {
 pub struct StreamInfo {
     pub user_id: u64,
     pub ssrc: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct VoiceEvent {
+    pub who: StreamInfo,
+    pub timestamp: time::OffsetDateTime,
+    pub event: Event,
+}
+
+#[derive(Debug, Clone)]
+pub enum Event {
+    SpeakForFirstTime,
+    BeginSpeaking,
+    EndSpeaking,
+    Disconnect,
 }

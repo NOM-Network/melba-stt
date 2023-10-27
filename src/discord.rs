@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use serenity::async_trait;
-use tokio::sync::mpsc;
-use tracing::{debug, error, info, instrument, trace};
+use tokio::sync::{broadcast, mpsc};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
-    audio::{ChannelSetup, StreamInfo},
+    audio::{ChannelSetup, Event, StreamInfo, VoiceEvent},
     config::{self, SttConfig},
     nn::model::Segment,
 };
@@ -13,26 +13,37 @@ use crate::{
 pub async fn setup_discord_bot(
     token: String,
     config: Arc<SttConfig>,
-) -> Result<(serenity::Client, Reciever, mpsc::Receiver<ChannelSetup>), Box<dyn std::error::Error>>
-{
+) -> Result<
+    (
+        serenity::Client,
+        Reciever,
+        mpsc::Receiver<ChannelSetup>,
+        broadcast::Receiver<VoiceEvent>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     use serenity::prelude::*;
     use songbird::SerenityInit;
-    let (s, r) = mpsc::channel(8);
-    let reciever = Reciever::new(s, config.clone());
+    let (channel_setup_send, channel_setup_recv) = mpsc::channel(8);
+    let (voice_event_send, voice_event_recv) = broadcast::channel(16);
+    let reciever = Reciever::new(channel_setup_send, voice_event_send, config.clone());
 
     let songbird_config =
         songbird::Config::default().decode_mode(songbird::driver::DecodeMode::Decode);
 
-    let client = Client::builder(token, GatewayIntents::non_privileged())
-        .event_handler(Handler {
-            reciever: reciever.clone(),
-            config: config.clone(),
-            call: tokio::sync::Mutex::new(None),
-        })
-        .register_songbird_from_config(songbird_config)
-        .await?;
+    let client = Client::builder(
+        token,
+        GatewayIntents::non_privileged() | GatewayIntents::GUILD_MEMBERS,
+    )
+    .event_handler(Handler {
+        reciever: reciever.clone(),
+        config: config.clone(),
+        call: tokio::sync::Mutex::new(None),
+    })
+    .register_songbird_from_config(songbird_config)
+    .await?;
 
-    Ok((client, reciever, r))
+    Ok((client, reciever, channel_setup_recv, voice_event_recv))
 }
 
 struct Handler {
@@ -86,18 +97,24 @@ pub struct Reciever {
     voice_ssrc_map: Arc<dashmap::DashMap<u32, u64>>,
     inverse_ssrc_map: Arc<dashmap::DashMap<u64, u32>>,
     ssrc_to_sender_map: Arc<dashmap::DashMap<u32, mpsc::Sender<Vec<i16>>>>,
-    new_channel_send: Arc<mpsc::Sender<ChannelSetup>>,
+    new_channel_send: mpsc::Sender<ChannelSetup>,
+    voice_event_send: broadcast::Sender<VoiceEvent>,
 
     config: Arc<SttConfig>,
 }
 
 impl Reciever {
-    fn new(setup_sender: mpsc::Sender<ChannelSetup>, config: Arc<SttConfig>) -> Self {
+    fn new(
+        setup_sender: mpsc::Sender<ChannelSetup>,
+        voice_event_send: broadcast::Sender<VoiceEvent>,
+        config: Arc<SttConfig>,
+    ) -> Self {
         Self {
             voice_ssrc_map: Arc::new(dashmap::DashMap::new()),
             inverse_ssrc_map: Arc::new(dashmap::DashMap::new()),
             ssrc_to_sender_map: Arc::new(dashmap::DashMap::new()),
-            new_channel_send: Arc::new(setup_sender),
+            new_channel_send: setup_sender,
+            voice_event_send,
             config,
         }
     }
@@ -125,6 +142,13 @@ impl Reciever {
             .await
             .unwrap();
         self.ssrc_to_sender_map.insert(ssrc, sender);
+        self.voice_event_send
+            .send(VoiceEvent {
+                who: StreamInfo { user_id, ssrc },
+                timestamp: time::OffsetDateTime::now_utc(),
+                event: Event::SpeakForFirstTime,
+            })
+            .unwrap();
     }
 
     async fn get_user_by_ssrc(&self, ssrc: u32) -> Option<u64> {
@@ -188,10 +212,45 @@ impl songbird::EventHandler for Reciever {
                 }
             }
             songbird::EventContext::SpeakingUpdate(update) => {
-                debug!(?update, "speaker updated")
+                debug!(?update, "speaker updated");
+                let event = if update.speaking {
+                    Event::BeginSpeaking
+                } else {
+                    Event::EndSpeaking
+                };
+                let ssrc = update.ssrc;
+                let user_id = self.get_user_by_ssrc(ssrc).await;
+                if let None = user_id {
+                    warn!(?ssrc, "did not have linked user id for speaking start");
+                    return None;
+                }
+                let user_id = user_id.unwrap();
+                self.voice_event_send
+                    .send(VoiceEvent {
+                        who: StreamInfo { user_id, ssrc },
+                        timestamp: time::OffsetDateTime::now_utc(),
+                        event,
+                    })
+                    .expect("failed to send speaking event");
             }
             songbird::EventContext::ClientDisconnect(event) => {
+                let ssrc = self.get_user_by_id(event.user_id.0).await;
                 self.remove_user_by_id(event.user_id.0).await;
+                if let None = ssrc {
+                    warn!(?ssrc, "did not have linked user id for speaking end");
+                    return None;
+                }
+                let ssrc = ssrc.unwrap();
+                self.voice_event_send
+                    .send(VoiceEvent {
+                        who: StreamInfo {
+                            user_id: event.user_id.0,
+                            ssrc,
+                        },
+                        timestamp: time::OffsetDateTime::now_utc(),
+                        event: Event::Disconnect,
+                    })
+                    .expect("failed to send voice event");
                 debug!(?event.user_id, "client disconnected");
             }
             _ => {
@@ -207,4 +266,6 @@ impl songbird::EventHandler for Reciever {
 pub struct CompletedMessage {
     pub message: Vec<Segment>,
     pub who: StreamInfo,
+    pub started_at: time::OffsetDateTime,
+    pub speech_duration: std::time::Duration,
 }

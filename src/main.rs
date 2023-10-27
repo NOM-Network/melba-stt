@@ -5,6 +5,7 @@ use melba_stt::{
     config,
     discord::{setup_discord_bot, CompletedMessage},
     nn::{self},
+    ws::websocket_task,
 };
 
 use tracing::{debug, info};
@@ -35,50 +36,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(?device, "using");
     let model = nn::get_model(device).await?;
 
-    let (mut client, _, channel_init_recv) =
+    let (mut client, _, channel_init_recv, speaking_event_recv) =
         setup_discord_bot(secrets.discord_token, config.clone()).await?;
 
-    let (completed_messages_send, mut completed_messages_recv) =
-        tokio::sync::mpsc::channel::<CompletedMessage>(16);
+    let cache = client.cache_and_http.clone().cache.clone();
+
+    let (completed_messages_send, completed_messages_recv) =
+        tokio::sync::broadcast::channel::<CompletedMessage>(16);
 
     let handle_streams_task = tokio::task::spawn(async move {
         handle_audio_streams(model, channel_init_recv, completed_messages_send).await
     });
 
-    let debug_print_task = tokio::task::spawn(async move {
-        while let Some(msg) = completed_messages_recv.recv().await {
-            // info!(who=?msg.who, content=msg.message, "completed message");
-            let min_no_speech_prob = msg
-                .message
-                .iter()
-                .map(|segment| (segment.dr.no_speech_prob * 1_000_000.0) as i32)
-                .min()
-                .unwrap_or(1_000_000) as f32
-                / 1_000_000.0;
+    let websocket_task = {
+        let completed_messages_recv = completed_messages_recv.resubscribe();
+        let cache = cache.clone();
+        let config = config.clone();
+        tokio::task::spawn(async move {
+            websocket_task(completed_messages_recv, speaking_event_recv, cache, config).await;
+        })
+    };
 
-            let contents = msg
-                .message
-                .iter()
-                .map(|segment| segment.dr.text.to_owned())
-                .collect::<Vec<_>>();
-
-            debug!(min_no_speech_prob, "converted message");
-            if min_no_speech_prob < 0.45 {
-                info!(?contents, ?msg.who, "completed message");
-            } else {
-                debug!(?contents, ?msg.who, "message had high no speech probability")
-            }
-        }
-    });
+    let debug_print_task = {
+        let completed_messages_recv = completed_messages_recv.resubscribe();
+        let cache = cache.clone();
+        let config = config.clone();
+        tokio::task::spawn(
+            async move { tracing_task(completed_messages_recv, cache, config).await },
+        )
+    };
 
     let client_fut = client.start();
     info!("starting client");
     tokio::select! {
         t = client_fut => t.unwrap(),
+        w = websocket_task => w.unwrap(),
         s = handle_streams_task => s.unwrap(),
         p = debug_print_task => p.unwrap(),
     }
     info!("done");
 
     Ok(())
+}
+
+async fn tracing_task(
+    mut completed_messages_recv: tokio::sync::broadcast::Receiver<CompletedMessage>,
+    cache: Arc<serenity::cache::Cache>,
+    config: Arc<config::SttConfig>,
+) {
+    while let Ok(msg) = completed_messages_recv.recv().await {
+        // info!(who=?msg.who, content=msg.message, "completed message");
+        let min_no_speech_prob = msg
+            .message
+            .iter()
+            .map(|segment| (segment.dr.no_speech_prob * 1_000_000.0) as i32)
+            .min()
+            .unwrap_or(1_000_000) as f32
+            / 1_000_000.0;
+
+        let contents = msg
+            .message
+            .iter()
+            .map(|segment| segment.dr.text.to_owned())
+            .collect::<Vec<_>>();
+
+        let who = cache
+            .member(config.channel_to_join.guild_id, msg.who.user_id)
+            .map(|member| member.user.name.clone())
+            .unwrap_or_else(|| "did not find user".to_string());
+
+        debug!(min_no_speech_prob, "converted message");
+        if min_no_speech_prob < 0.45 {
+            info!(?contents, ?who, who.id=msg.who.user_id, "completed message");
+        } else {
+            debug!(?contents, ?who, who.id=msg.who.user_id, "message had high no speech probability")
+        }
+    }
 }

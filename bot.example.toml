@@ -6,3 +6,5 @@
 channel_to_join = { guild_id = 574720535888396288, channel_id = 1063254870775312434 }
 # the following discord user ids should be ignored, and will not have audio transcribed when they speak
 ignored_users = [183249892712513536]
+# the websocket server to connect to
+ws_url = "ws://localhost:9876"
