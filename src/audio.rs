@@ -219,13 +219,14 @@ pub struct StreamInfo {
 
 #[derive(Debug, Clone)]
 pub struct VoiceEvent {
-    pub who: StreamInfo,
+    pub user_id: u64,
     pub timestamp: time::OffsetDateTime,
     pub event: Event,
 }
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    Connect,
     SpeakForFirstTime,
     BeginSpeaking,
     EndSpeaking,

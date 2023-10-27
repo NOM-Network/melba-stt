@@ -131,14 +131,14 @@ impl TimestampedUserMessage {
         config: Arc<config::SttConfig>,
     ) -> Self {
         let username = cache
-            .member(config.channel_to_join.guild_id, event.who.user_id)
+            .member(config.channel_to_join.guild_id, event.user_id)
             .expect("user appeared in voice event with unkown user id")
             .user
             .name;
 
         Self {
             user: UserInfo {
-                id: event.who.user_id,
+                id: event.user_id,
                 username,
             },
             timestamp: event.timestamp,
@@ -150,6 +150,7 @@ impl TimestampedUserMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum OutgoingWebsocketMessage {
+    Connect,
     UserSpokeForFirstTime,
     SpeakingBegin,
     SpeakingEnd,
@@ -167,6 +168,7 @@ enum OutgoingWebsocketMessage {
 impl From<audio::Event> for OutgoingWebsocketMessage {
     fn from(value: audio::Event) -> Self {
         match value {
+            audio::Event::Connect => Self::Connect,
             audio::Event::SpeakForFirstTime => Self::UserSpokeForFirstTime,
             audio::Event::BeginSpeaking => Self::SpeakingBegin,
             audio::Event::EndSpeaking => Self::SpeakingEnd,

@@ -95,6 +95,12 @@ impl serenity::client::EventHandler for Handler {
         let mut inner_call = self.call.lock().await;
         *inner_call = Some(handler_lock);
     }
+
+    async fn voice_state_update(&self, ctx: serenity::client::Context, old: Option<serenity::model::voice::VoiceState>, new: serenity::model::voice::VoiceState) {
+        if self.reciever.get_user_by_id(new.user_id.0).await.is_none() {
+            self.reciever.voice_event_send.send(VoiceEvent { user_id: new.user_id.0, timestamp: time::OffsetDateTime::now_utc(), event: Event::Connect }).unwrap();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -149,7 +155,7 @@ impl Reciever {
         self.ssrc_to_sender_map.insert(ssrc, sender);
         self.voice_event_send
             .send(VoiceEvent {
-                who: StreamInfo { user_id, ssrc },
+                user_id,
                 timestamp: time::OffsetDateTime::now_utc(),
                 event: Event::SpeakForFirstTime,
             })
@@ -232,26 +238,18 @@ impl songbird::EventHandler for Reciever {
                 let user_id = user_id.unwrap();
                 self.voice_event_send
                     .send(VoiceEvent {
-                        who: StreamInfo { user_id, ssrc },
+                        user_id,
                         timestamp: time::OffsetDateTime::now_utc(),
                         event,
                     })
                     .expect("failed to send speaking event");
             }
             songbird::EventContext::ClientDisconnect(event) => {
-                let ssrc = self.get_user_by_id(event.user_id.0).await;
                 self.remove_user_by_id(event.user_id.0).await;
-                if let None = ssrc {
-                    warn!(?ssrc, "did not have linked user id for speaking end");
-                    return None;
-                }
-                let ssrc = ssrc.unwrap();
+
                 self.voice_event_send
                     .send(VoiceEvent {
-                        who: StreamInfo {
-                            user_id: event.user_id.0,
-                            ssrc,
-                        },
+                        user_id: event.user_id.0,
                         timestamp: time::OffsetDateTime::now_utc(),
                         event: Event::Disconnect,
                     })
