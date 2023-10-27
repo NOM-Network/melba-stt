@@ -8,7 +8,7 @@ use melba_stt::{
     ws::websocket_task,
 };
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(?device, "using");
     let model = nn::get_model(device).await?;
 
-    let (mut client, _, channel_init_recv, speaking_event_recv) =
+    let (mut client, voice_reciever, channel_init_recv, speaking_event_recv, call) =
         setup_discord_bot(secrets.discord_token, config.clone()).await?;
 
     let cache = client.cache_and_http.clone().cache.clone();
@@ -66,16 +66,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     };
 
-    let client_fut = client.start();
+
+    let client_fut = tokio::task::spawn(async move {
+        client.start().await.expect("client failed to run");
+    });
     info!("starting client");
-    tokio::select! {
+    let _potentially_signal = tokio::select! {
         t = client_fut => t.unwrap(),
         w = websocket_task => w.unwrap(),
         s = handle_streams_task => s.unwrap(),
         p = debug_print_task => p.unwrap(),
+        c = tokio::signal::ctrl_c() => {
+            info!("ctrl-c pressed");
+            c.unwrap();
+        }
+    };
+    
+    let call = call.lock_owned().await;
+    if let Some(call) = call.as_ref() {
+        info!("leaving call");
+        let mut call_lock = call.lock().await;
+        call_lock.leave().await.expect("failed to leave voice channel");
+    } else {
+        warn!("did not leave call as was not in active call");
     }
+    info!("waiting for 2s to allow tasks to end");  // todo: this sucks
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     info!("done");
-
+    
     Ok(())
 }
 
@@ -107,9 +125,19 @@ async fn tracing_task(
 
         debug!(min_no_speech_prob, "converted message");
         if min_no_speech_prob < 0.45 {
-            info!(?contents, ?who, who.id=msg.who.user_id, "completed message");
+            info!(
+                ?contents,
+                ?who,
+                who.id = msg.who.user_id,
+                "completed message"
+            );
         } else {
-            debug!(?contents, ?who, who.id=msg.who.user_id, "message had high no speech probability")
+            debug!(
+                ?contents,
+                ?who,
+                who.id = msg.who.user_id,
+                "message had high no speech probability"
+            )
         }
     }
 }

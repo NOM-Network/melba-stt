@@ -19,6 +19,7 @@ pub async fn setup_discord_bot(
         Reciever,
         mpsc::Receiver<ChannelSetup>,
         broadcast::Receiver<VoiceEvent>,
+        Arc<tokio::sync::Mutex<Option<Call>>>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -27,6 +28,8 @@ pub async fn setup_discord_bot(
     let (channel_setup_send, channel_setup_recv) = mpsc::channel(8);
     let (voice_event_send, voice_event_recv) = broadcast::channel(16);
     let reciever = Reciever::new(channel_setup_send, voice_event_send, config.clone());
+
+    let call = Arc::new(tokio::sync::Mutex::new(None));
 
     let songbird_config =
         songbird::Config::default().decode_mode(songbird::driver::DecodeMode::Decode);
@@ -38,24 +41,26 @@ pub async fn setup_discord_bot(
     .event_handler(Handler {
         reciever: reciever.clone(),
         config: config.clone(),
-        call: tokio::sync::Mutex::new(None),
+        call: call.clone(),
     })
     .register_songbird_from_config(songbird_config)
     .await?;
 
-    Ok((client, reciever, channel_setup_recv, voice_event_recv))
+    Ok((client, reciever, channel_setup_recv, voice_event_recv, call))
 }
+
+type Call = Arc<serenity::prelude::Mutex<songbird::Call>>;
 
 struct Handler {
     reciever: Reciever,
     config: Arc<SttConfig>,
-    call: tokio::sync::Mutex<Option<Arc<serenity::prelude::Mutex<songbird::Call>>>>,
+    call: Arc<tokio::sync::Mutex<Option<Call>>>,
 }
 
 #[async_trait]
 impl serenity::client::EventHandler for Handler {
-    async fn ready(&self, ctx: serenity::client::Context, ready: serenity::model::gateway::Ready) {
-        info!(event=?ready, "ready");
+    async fn cache_ready(&self, ctx: serenity::client::Context, _: Vec<serenity::model::id::GuildId>) {
+        info!("cache ready");
         let manager = songbird::get(&ctx).await.expect("songbird failed").clone();
         let config::Channel {
             guild_id,
