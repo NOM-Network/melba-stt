@@ -74,6 +74,7 @@ enum MessageSide {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TimestampedUserMessage {
     user: UserInfo,
     #[serde(with = "time::serde::iso8601")]
@@ -153,6 +154,7 @@ enum OutgoingWebsocketMessage {
     SpeakingBegin,
     SpeakingEnd,
     UserDisconnected,
+    #[serde(rename_all = "camelCase")]
     UnderstoodSpeech {
         #[serde(with = "time::serde::iso8601")]
         started_speaking_at: time::OffsetDateTime,
@@ -173,8 +175,11 @@ impl From<audio::Event> for OutgoingWebsocketMessage {
     }
 }
 
+#[serde_with::serde_as]
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct UserInfo {
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     id: u64,
     username: String,
 }
