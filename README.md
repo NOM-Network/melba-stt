@@ -21,3 +21,10 @@ By default, the bot will use openai's `tiny` model for whisper, which is equival
 model = { repo = { name = "openai/whisper-tiny" } }
 ```
 If you want to use another model, then the repo can be changed.
+
+
+## License
+
+(c) by NOM Network
+
+Code is licensed under an [AGPL 3.0 (and later) license](LICENSE.md).
