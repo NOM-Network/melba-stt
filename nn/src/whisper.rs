@@ -5,9 +5,8 @@ use candle_nn::ops::softmax;
 use candle_transformers::models::whisper;
 use rand::{prelude::Distribution, SeedableRng};
 
-use tracing::{debug, info, instrument, trace, trace_span, warn};
+// use tracing::{debug, info, instrument, trace, trace_span, warn};
 
-use super::w_reimpl;
 
 #[derive(Debug, Clone)]
 pub struct DecodingResult {
@@ -26,14 +25,15 @@ pub struct Segment {
     pub dr: DecodingResult,
 }
 
+#[derive(Clone)]
 pub struct Decoder {
-    model: w_reimpl::Whisper,
-    rng: Mutex<rand::rngs::StdRng>,
+    model: candle_transformers::models::whisper::model::Whisper,
+    rng: rand::rngs::StdRng,
     tokenizer: tokenizers::Tokenizer,
     suppress_tokens: candle_core::Tensor,
     sot_token: u32,
     transcribe_token: u32,
-    translate_token: u32,
+    // translate_token: u32,
     eot_token: u32,
     no_speech_token: u32,
     no_timestamps_token: u32,
@@ -42,7 +42,7 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new(
-        model: w_reimpl::Whisper,
+        model: candle_transformers::models::whisper::model::Whisper,
         device: candle_core::Device,
         tokenizer: tokenizers::Tokenizer,
         seed: u64,
@@ -61,18 +61,18 @@ impl Decoder {
         let suppress_tokens = candle_core::Tensor::new(suppress_tokens.as_slice(), &device)?;
         let sot_token = tokenizer.token_to_id(whisper::SOT_TOKEN).unwrap();
         let transcribe_token = tokenizer.token_to_id(whisper::TRANSCRIBE_TOKEN).unwrap();
-        let translate_token = tokenizer.token_to_id(whisper::TRANSLATE_TOKEN).unwrap();
+        // let translate_token = tokenizer.token_to_id(whisper::TRANSLATE_TOKEN).unwrap();
         let eot_token = tokenizer.token_to_id(whisper::EOT_TOKEN).unwrap();
         let no_speech_token = tokenizer.token_to_id(whisper::NO_SPEECH_TOKEN).unwrap();
 
         Ok(Self {
             model,
-            rng: Mutex::new(rand::rngs::StdRng::seed_from_u64(seed)),
+            rng: rand::rngs::StdRng::seed_from_u64(seed),
             tokenizer,
             suppress_tokens,
             sot_token,
             transcribe_token,
-            translate_token,
+            // translate_token,
             eot_token,
             no_speech_token,
             language_token,
@@ -80,15 +80,15 @@ impl Decoder {
         })
     }
 
-    #[instrument(skip_all)]
+    // #[instrument(skip_all)]
     fn decode(
-        &self,
+        &mut self,
         mel: &candle_core::Tensor,
         t: f64,
     ) -> Result<DecodingResult, Box<dyn std::error::Error>> {
-        let st = std::time::Instant::now();
+        // let st = std::time::Instant::now();
         let audio_features = self.model.encoder.forward(mel, true)?;
-        trace!(elapsed=?st.elapsed(), "audio features: {:?}", audio_features.dims());
+        // trace!(elapsed=?st.elapsed(), "audio features: {:?}", audio_features.dims());
         let sample_len = self.model.config.max_target_positions / 2;
         let mut sum_logprob = 0f64;
         let mut no_speech_prob = f64::NAN;
@@ -100,21 +100,21 @@ impl Decoder {
         tokens.push(self.no_timestamps_token);
 
         for i in 0..sample_len {
-            let tkns_st = std::time::Instant::now();
+            // let tkns_st = std::time::Instant::now();
             let tokens_t = candle_core::Tensor::new(tokens.as_slice(), mel.device())?;
-            let tkns_dur = tkns_st.elapsed();
+            // let tkns_dur = tkns_st.elapsed();
 
             // The model expects a batch dim but this inference loop does not handle
             // it so we add it at this point.
-            let fw_st = std::time::Instant::now();
+            // let fw_st = std::time::Instant::now();
             let tokens_t = tokens_t.unsqueeze(0)?;
             let ys = self
                 .model
                 .decoder
                 .forward(&tokens_t, &audio_features, i == 0)?;
-            let fw_dur = fw_st.elapsed();
+            // let fw_dur = fw_st.elapsed();
 
-            let nsp_start = std::time::Instant::now();
+            // let nsp_start = std::time::Instant::now();
             // Extract the no speech probability on the first iteration by looking at the first
             // token logits and the probability for the according token.
             if i == 0 {
@@ -123,9 +123,9 @@ impl Decoder {
                     .i(self.no_speech_token as usize)?
                     .to_scalar::<f32>()? as f64;
             }
-            let nsp_dur = nsp_start.elapsed();
+            // let nsp_dur = nsp_start.elapsed();
 
-            let idk_st = std::time::Instant::now();
+            // let idk_st = std::time::Instant::now();
             let (_, seq_len, _) = ys.dims3()?;
             let logits = self
                 .model
@@ -145,8 +145,7 @@ impl Decoder {
                 let prs = softmax(&(&logits / t)?, 0)?;
                 let logits_v: Vec<f32> = prs.to_vec1()?;
                 let distr = rand::distributions::WeightedIndex::new(&logits_v)?;
-                let mut rng = self.rng.lock().unwrap();
-                distr.sample(&mut *rng) as u32
+                distr.sample(&mut self.rng) as u32
             } else {
                 let logits_v: Vec<f32> = logits.to_vec1()?;
                 logits_v
@@ -156,15 +155,15 @@ impl Decoder {
                     .map(|(i, _)| i as u32)
                     .unwrap()
             };
-            let idk_dur = idk_st.elapsed();
-            trace!(
-                ?tkns_dur,
-                ?fw_dur,
-                ?nsp_dur,
-                ?idk_dur,
-                ?next_token,
-                "found next token"
-            );
+            // let idk_dur = idk_st.elapsed();
+            // trace!(
+            //     ?tkns_dur,
+            //     ?fw_dur,
+            //     ?nsp_dur,
+            //     ?idk_dur,
+            //     ?next_token,
+            //     "found next token"
+            // );
             tokens.push(next_token);
             let prob = softmax(&logits, candle_core::D::Minus1)?
                 .i(next_token as usize)?
@@ -188,9 +187,9 @@ impl Decoder {
         })
     }
 
-    #[instrument(skip_all)]
+    // #[instrument(skip_all)]
     fn decode_with_fallback(
-        &self,
+        &mut self,
         segment: &candle_core::Tensor,
     ) -> Result<DecodingResult, Box<dyn std::error::Error>> {
         for (i, &t) in whisper::TEMPERATURES.iter().enumerate() {
@@ -218,16 +217,16 @@ impl Decoder {
     }
 
     pub fn run(
-        &self,
+        &mut self,
         mel: &candle_core::Tensor,
     ) -> Result<Vec<Segment>, Box<dyn std::error::Error>> {
         let (_, _, content_frames) = mel.dims3()?;
         let mut seek = 0;
         let mut segments = vec![];
         while seek < content_frames {
-            let span = trace_span!("read_section");
-            let _guard = span.enter();
-            let start = std::time::Instant::now();
+            // let span = trace_span!("read_section");
+            // let _guard = span.enter();
+            // let start = std::time::Instant::now();
             let time_offset = (seek * whisper::HOP_LENGTH) as f64 / whisper::SAMPLE_RATE as f64;
             let segment_size = usize::min(content_frames - seek, whisper::N_FRAMES);
             let mel_segment = mel.narrow(2, seek, segment_size)?;
@@ -238,7 +237,7 @@ impl Decoder {
             if dr.no_speech_prob > whisper::NO_SPEECH_THRESHOLD
                 && dr.avg_logprob < whisper::LOGPROB_THRESHOLD
             {
-                info!("no speech detected, skipping {seek} {dr:?}");
+                // info!("no speech detected, skipping {seek} {dr:?}");
                 continue;
             }
             let segment = Segment {
@@ -246,13 +245,13 @@ impl Decoder {
                 duration: segment_duration,
                 dr,
             };
-            debug!(
-                "{:.1}s -- {:.1}s: {}",
-                segment.start,
-                segment.start + segment.duration,
-                segment.dr.text,
-            );
-            trace!("{seek}: {segment:?}, in {:?}", start.elapsed());
+            // debug!(
+            //     "{:.1}s -- {:.1}s: {}",
+            //     segment.start,
+            //     segment.start + segment.duration,
+            //     segment.dr.text,
+            // );
+            // trace!("{seek}: {segment:?}, in {:?}", start.elapsed());
             segments.push(segment)
         }
         Ok(segments)
