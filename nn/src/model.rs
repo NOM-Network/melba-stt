@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::whisper::Decoder;
+use crate::whisper::{self, Decoder};
 
 // use crate::whisper::{SharedAudio, SharedText, SharedWhisperParts};
 
@@ -68,6 +68,19 @@ impl ModelBuilder {
         self.device = Some(candle_core::Device::cuda_if_available(index).unwrap());
         self
     }
+    
+    fn mel_filters(size: usize) -> Vec<f32> {
+        let filter_bytes = match size {
+            80 => include_bytes!("melfilters.bytes"),
+            128 => unimplemented!("no support for whisper v3 yet"),
+            filter_size => panic!("invalid filter size `{filter_size}`")
+        };
+
+        filter_bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<f32>>()
+    }
 
     pub async fn finish<'a>(self) -> Result<ModelContainer, Error> {
         let api = hf_hub::api::tokio::Api::new()?;
@@ -99,13 +112,16 @@ impl ModelBuilder {
             candle_transformers::models::whisper::DTYPE,
             &device,
         )?;
+        let filters = Self::mel_filters(80);
 
-        let whisper = candle_transformers::models::whisper::model::Whisper::load(&model, config.clone())?;
+        let whisper =
+            candle_transformers::models::whisper::model::Whisper::load(&model, config.clone())?;
 
         Ok(ModelContainer {
             model_data: ModelData {
                 config,
                 tokenizer,
+                filters,
                 // model,
             },
             device,
@@ -125,38 +141,49 @@ impl ModelContainer {
     pub fn get_new_speaker(&self) -> SpeakerProcessor {
         let tokenizer = self.model_data.tokenizer.clone();
         let lt = tokenizer.token_to_id("<|en|>");
-        let decoder = Decoder::new(
-            self.whisper.clone(),
-            self.device.clone(),
-            tokenizer,
-            0,
-            lt,
-        ).unwrap();
+        let decoder =
+            Decoder::new(self.whisper.clone(), self.device.clone(), tokenizer, 0, lt).unwrap();
 
-        SpeakerProcessor {
-            decoder: decoder,
-        }
-        // // todo: contruct a whisper model somewhere
-        // e.g. this would load a model
-        // but every time `Whisper::load` is called it allocates a bunch of gpu memory
-
-        // SpeakerProcessor {
-        //     model: SharedWhisperParts,
-        // }
+        SpeakerProcessor { decoder, config: self.model_data.config.clone(), filters: self.model_data.filters.clone(), device: self.device.clone() }
     }
 }
 
 pub struct ModelData {
     config: candle_transformers::models::whisper::Config,
     tokenizer: tokenizers::Tokenizer,
+    filters: Vec<f32>,
     // model: candle_nn::var_builder::VarBuilderArgs<'a, Box<dyn candle_nn::var_builder::SimpleBackend>>,
 }
 
 pub struct SpeakerProcessor {
+    config: candle_transformers::models::whisper::Config,
+    filters: Vec<f32>,
+    device: candle_core::Device,
     pub decoder: Decoder,
 }
 
-// pub struct SharedModel {}
+impl SpeakerProcessor {
+    pub fn predict(&mut self, data: Vec<f32>) -> Vec<whisper::Segment> {
+        let mel = candle_transformers::models::whisper::audio::pcm_to_mel(
+            &self.config,
+            &data,
+            &self.filters,
+        );
+        let mel_len = mel.len();
+        let mel = candle_core::Tensor::from_vec(
+            mel,
+            (
+                1,
+                80,  // todo: this is only valid for whisper v1, v2 and will break v3
+                mel_len / 80,
+            ),
+            &self.device,
+        )
+        .unwrap();
+        // let mut model = self.inner.lock().unwrap();
+        self.decoder.run(&mel).unwrap()
+    }
+}
 
 #[derive(Debug)]
 pub struct FilesSpec {

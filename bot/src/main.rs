@@ -1,29 +1,45 @@
-use nn::model::{FilesSpec, ModelBuilder};
+use std::sync::Arc;
+
+use bot::stream::StreamProcessor;
+use nn::model::ModelBuilder;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::prelude::*;
 
     if let Err(_) = std::env::var("RUST_LOG") {
-        std::env::set_var("RUST_LOG", "debug,tokenizers::tokenizer::serialization=error");
+        std::env::set_var(
+            "RUST_LOG",
+            "info,bot=trace,tokenizers::tokenizer::serialization=error",
+        );
     }
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::from_default_env())
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_file(true)
+                .with_line_number(true),
+        )
         .init();
 
-    let mb = ModelBuilder::default()
+    let config = tokio::fs::read_to_string("bot.toml").await?;
+    let config: bot::config::SttConfig = toml::from_str(&config)?;
+    let secrets = tokio::fs::read_to_string("secrets.toml").await?;
+    let secrets: bot::config::Secrets = toml::from_str(&secrets)?;
+
+    let model = ModelBuilder::default()
         .cuda_or_cpu(0)
         .finish()
         .await
         .unwrap();
-    let mut speakers = vec![];
 
-    loop {
-        let speaker = mb.get_new_speaker();
-        println!("added");
-        speakers.push(speaker);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    let stream_processor = Arc::new(StreamProcessor::new(model));
+
+    let mut client =
+        bot::discord::setup_discord_bot(&secrets.discord_token, stream_processor, config.clone())
+            .await;
+    client.start().await.expect("run failed");
+
+    Ok(())
 }
