@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use serenity::{
-    all::{VoiceState, VoiceStateUpdateEvent},
     async_trait,
     client::Context,
+    model::voice::VoiceState,
 };
-use tracing::{debug, info, trace, warn, instrument};
+use tracing::{debug, trace, warn, instrument};
 
 use crate::{config, stream::StreamProcessor};
 

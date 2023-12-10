@@ -207,7 +207,10 @@ name = "bot"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "itertools 0.12.0",
  "nn",
+ "num-complex",
+ "realfft",
  "rubato",
  "serde",
  "serde_json",
@@ -1344,6 +1347,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25db6b064527c5d482d0423354fcd07a89a2dfe07b67892e62411946db7f07b0"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1561,7 +1573,11 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "hf-hub",
+ "itertools 0.12.0",
+ "num-complex",
+ "num-traits",
  "rand",
+ "realfft",
  "serde_json",
  "thiserror",
  "tokenizers",
@@ -1991,7 +2007,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "059f538b55efd2309c9794130bc149c6a553db90e9d99c2030785c82f0bd7df9"
 dependencies = [
  "either",
- "itertools",
+ "itertools 0.11.0",
  "rayon",
 ]
 
@@ -2910,7 +2926,7 @@ dependencies = [
  "esaxx-rs",
  "getrandom",
  "indicatif",
- "itertools",
+ "itertools 0.11.0",
  "lazy_static",
  "log",
  "macro_rules_attribute",

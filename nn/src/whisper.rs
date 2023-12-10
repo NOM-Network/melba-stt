@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use candle_core::IndexOp;
 use candle_nn::ops::softmax;
 use candle_transformers::models::whisper;
@@ -230,6 +228,47 @@ impl Decoder {
             let time_offset = (seek * whisper::HOP_LENGTH) as f64 / whisper::SAMPLE_RATE as f64;
             let segment_size = usize::min(content_frames - seek, whisper::N_FRAMES);
             let mel_segment = mel.narrow(2, seek, segment_size)?;
+            let segment_duration =
+                (segment_size * whisper::HOP_LENGTH) as f64 / whisper::SAMPLE_RATE as f64;
+            let dr = self.decode_with_fallback(&mel_segment)?;
+            seek += segment_size;
+            if dr.no_speech_prob > whisper::NO_SPEECH_THRESHOLD
+                && dr.avg_logprob < whisper::LOGPROB_THRESHOLD
+            {
+                // info!("no speech detected, skipping {seek} {dr:?}");
+                continue;
+            }
+            let segment = Segment {
+                start: time_offset,
+                duration: segment_duration,
+                dr,
+            };
+            // debug!(
+            //     "{:.1}s -- {:.1}s: {}",
+            //     segment.start,
+            //     segment.start + segment.duration,
+            //     segment.dr.text,
+            // );
+            // trace!("{seek}: {segment:?}, in {:?}", start.elapsed());
+            segments.push(segment)
+        }
+        Ok(segments)
+    }
+
+    pub fn run_transposed(
+        &mut self,
+        mel: &candle_core::Tensor,
+    ) -> Result<Vec<Segment>, Box<dyn std::error::Error>> {
+        let (_, content_frames, _) = mel.dims3()?;
+        let mut seek = 0;
+        let mut segments = vec![];
+        while seek < content_frames {
+            // let span = trace_span!("read_section");
+            // let _guard = span.enter();
+            // let start = std::time::Instant::now();
+            let time_offset = (seek * whisper::HOP_LENGTH) as f64 / whisper::SAMPLE_RATE as f64;
+            let segment_size = usize::min(content_frames - seek, whisper::N_FRAMES);
+            let mel_segment = mel.narrow(1, seek, segment_size)?;
             let segment_duration =
                 (segment_size * whisper::HOP_LENGTH) as f64 / whisper::SAMPLE_RATE as f64;
             let dr = self.decode_with_fallback(&mel_segment)?;

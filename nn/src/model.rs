@@ -2,8 +2,6 @@ use thiserror::Error;
 
 use crate::whisper::{self, Decoder};
 
-// use crate::whisper::{SharedAudio, SharedText, SharedWhisperParts};
-
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("error from hf_hub client: {0}")]
@@ -68,12 +66,12 @@ impl ModelBuilder {
         self.device = Some(candle_core::Device::cuda_if_available(index).unwrap());
         self
     }
-    
+
     fn mel_filters(size: usize) -> Vec<f32> {
         let filter_bytes = match size {
             80 => include_bytes!("melfilters.bytes"),
             128 => unimplemented!("no support for whisper v3 yet"),
-            filter_size => panic!("invalid filter size `{filter_size}`")
+            filter_size => panic!("invalid filter size `{filter_size}`"),
         };
 
         filter_bytes
@@ -82,7 +80,7 @@ impl ModelBuilder {
             .collect::<Vec<f32>>()
     }
 
-    pub async fn finish<'a>(self) -> Result<ModelContainer, Error> {
+    pub async fn finish(self) -> Result<ModelContainer, Error> {
         let api = hf_hub::api::tokio::Api::new()?;
         let repo = api.repo(self.repo.ok_or(Error::MissingField("repo".to_string()))?);
 
@@ -122,7 +120,6 @@ impl ModelBuilder {
                 config,
                 tokenizer,
                 filters,
-                // model,
             },
             device,
             whisper,
@@ -134,7 +131,6 @@ pub struct ModelContainer {
     model_data: ModelData,
     device: candle_core::Device,
     whisper: candle_transformers::models::whisper::model::Whisper,
-    // shared_parts: Arc<SharedWhisperParts>,
 }
 
 impl ModelContainer {
@@ -142,9 +138,14 @@ impl ModelContainer {
         let tokenizer = self.model_data.tokenizer.clone();
         let lt = tokenizer.token_to_id("<|en|>");
         let decoder =
-            Decoder::new(self.whisper.clone(), self.device.clone(), tokenizer, 0, lt).unwrap();
+            Decoder::new(self.whisper.clone(), self.device.clone(), tokenizer, rand::random(), lt).unwrap();
 
-        SpeakerProcessor { decoder, config: self.model_data.config.clone(), filters: self.model_data.filters.clone(), device: self.device.clone() }
+        SpeakerProcessor {
+            decoder,
+            config: self.model_data.config.clone(),
+            filters: self.model_data.filters.clone(),
+            device: self.device.clone(),
+        }
     }
 }
 
@@ -152,13 +153,12 @@ pub struct ModelData {
     config: candle_transformers::models::whisper::Config,
     tokenizer: tokenizers::Tokenizer,
     filters: Vec<f32>,
-    // model: candle_nn::var_builder::VarBuilderArgs<'a, Box<dyn candle_nn::var_builder::SimpleBackend>>,
 }
 
 pub struct SpeakerProcessor {
-    config: candle_transformers::models::whisper::Config,
-    filters: Vec<f32>,
-    device: candle_core::Device,
+    pub config: candle_transformers::models::whisper::Config,
+    pub filters: Vec<f32>,
+    pub device: candle_core::Device,
     pub decoder: Decoder,
 }
 
@@ -174,13 +174,38 @@ impl SpeakerProcessor {
             mel,
             (
                 1,
-                80,  // todo: this is only valid for whisper v1, v2 and will break v3
+                80, // todo: this is only valid for whisper v1, v2 and will break whsisper v3
                 mel_len / 80,
             ),
             &self.device,
         )
         .unwrap();
-        // let mut model = self.inner.lock().unwrap();
+        self.decoder.run(&mel).unwrap()
+    }
+
+    pub fn predict_with_mel(&mut self, data: Vec<Vec<f32>>) -> Vec<whisper::Segment> {
+        let mut mel = vec![vec![0.0; data.len()]; data[0].len()];
+
+        for i in 0..data.len() {
+            for j in 0..data[0].len() {
+                mel[j][i] = data[i][j];
+            }
+        }
+
+        let mel = mel.into_iter().flatten().collect::<Vec<_>>();
+
+        let mel_len = mel.len();
+        let mel = candle_core::Tensor::from_vec(
+            mel,
+            (
+                1,
+                80, // todo: this is only valid for whisper v1, v2 and will break whsiper v3
+                mel_len / 80,
+            ),
+            &self.device,
+        )
+        .unwrap();
+        dbg!(mel.shape());
         self.decoder.run(&mel).unwrap()
     }
 }
