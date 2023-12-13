@@ -31,12 +31,12 @@ impl StreamProcessor {
         info!(?user_id, "starting listen");
 
         while let Some(side) = tokio::select! {
-            r = receiver.recv() => r.map(|v| StreamSide::Speech(v)),
+            r = receiver.recv() => r.map(StreamSide::Speech),
             _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => Some(StreamSide::Silence),
         } {
             match side {
                 StreamSide::Silence => {
-                    if let Some(_) = current_sender {
+                    if current_sender.is_some() {
                         current_sender = None;
                         debug!(?user_id, "silence")
                     }

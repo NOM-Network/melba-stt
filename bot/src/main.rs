@@ -7,7 +7,7 @@ use nn::model::ModelBuilder;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::prelude::*;
 
-    if let Err(_) = std::env::var("RUST_LOG") {
+    if std::env::var("RUST_LOG").is_err() {
         std::env::set_var(
             "RUST_LOG",
             "info,bot=trace,recorder=trace,tokenizers::tokenizer::serialization=error",

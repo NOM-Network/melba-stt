@@ -150,7 +150,7 @@ where
                     .buffer
                     .iter()
                     .take(self.window_size)
-                    .map(|v| *v)
+                    .cloned()
                     .collect::<Vec<_>>();
                 let _ = self.buffer.drain(..self.step_size);
                 return Some(value);

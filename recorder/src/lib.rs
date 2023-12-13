@@ -169,13 +169,13 @@ impl Sink {
 
         let command = tokio::process::Command::new("ffmpeg")
             .arg("-nostdin")
-            .args(&["-f", "concat"])
-            .args(&["-safe", "0"])
-            .args(&[
+            .args(["-f", "concat"])
+            .args(["-safe", "0"])
+            .args([
                 "-i",
-                &input.canonicalize().unwrap().to_string_lossy().to_string(),
+                input.canonicalize().unwrap().to_string_lossy().as_ref(),
             ])
-            .args(&["-compression_level", "12"])
+            .args(["-compression_level", "12"])
             .arg(self.base.join("combined.flac"))
             .spawn()
             .unwrap();
