@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(_) = std::env::var("RUST_LOG") {
         std::env::set_var(
             "RUST_LOG",
-            "info,bot=trace,tokenizers::tokenizer::serialization=error",
+            "info,bot=trace,recorder=trace,tokenizers::tokenizer::serialization=error",
         );
     }
 
@@ -36,9 +36,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stream_processor = Arc::new(StreamProcessor::new(model));
 
-    let mut client =
-        bot::discord::setup_discord_bot(&secrets.discord_token, stream_processor, config.clone())
+    let recorder =
+        recorder::Recorder::new(format!("recordings/{}", config.channel_to_join.guild_id).into())
             .await;
+
+    let mut client = bot::discord::setup_discord_bot(
+        &secrets.discord_token,
+        stream_processor,
+        recorder,
+        config.clone(),
+    )
+    .await;
     client.start().await.expect("run failed");
 
     Ok(())
