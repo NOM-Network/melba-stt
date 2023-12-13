@@ -58,10 +58,7 @@ where
             .process(&mut samples, &mut output)
             .expect("failed to process fft");
 
-        let output = output
-            .into_iter()
-            .map(|c| c.abs().powi(2))
-            .collect();
+        let output = output.into_iter().map(|c| c.abs().powi(2)).collect();
         Some(output)
     }
 }

@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use itertools::Itertools;
-use nn::{
-    iterator::SpectrogramIteratorExt,
-    model::ModelContainer,
-};
+use nn::{iterator::SpectrogramIteratorExt, model::ModelContainer};
 use tracing::{debug, info};
 
 const DISCORD_SAMPLERATE_HZ: usize = 48_000;
@@ -252,7 +249,7 @@ where
         let next_value = self.inner.next();
 
         self.remaining -= 1;
-        
+
         match next_value {
             Some(value) => {
                 if self.remaining == 0 {
@@ -260,12 +257,14 @@ where
                 }
 
                 Some(value)
-            },
-            None => if self.remaining > 0 {
-                Some(self.pad_value)
-            } else {
-                None
-            },
+            }
+            None => {
+                if self.remaining > 0 {
+                    Some(self.pad_value)
+                } else {
+                    None
+                }
+            }
         }
     }
 }

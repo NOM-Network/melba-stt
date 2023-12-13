@@ -144,7 +144,14 @@ impl songbird::EventHandler for Receiver {
                             (
                                 s,
                                 self.session
-                                    .new_speaker(format!("{}-{}", user_id, time::OffsetDateTime::now_utc().unix_timestamp_nanos()).into())
+                                    .new_speaker(
+                                        format!(
+                                            "{}-{}",
+                                            user_id,
+                                            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+                                        )
+                                        .into(),
+                                    )
                                     .listen()
                                     .await,
                             ),
@@ -191,7 +198,7 @@ impl songbird::EventHandler for Receiver {
                     None => {
                         // if for some reason a user never spoke
                         return None;
-                    },
+                    }
                 };
 
                 self.ssrc_to_user_id.remove(&ssrc);

@@ -137,8 +137,14 @@ impl ModelContainer {
     pub fn get_new_speaker(&self) -> SpeakerProcessor {
         let tokenizer = self.model_data.tokenizer.clone();
         let lt = tokenizer.token_to_id("<|en|>");
-        let decoder =
-            Decoder::new(self.whisper.clone(), self.device.clone(), tokenizer, rand::random(), lt).unwrap();
+        let decoder = Decoder::new(
+            self.whisper.clone(),
+            self.device.clone(),
+            tokenizer,
+            rand::random(),
+            lt,
+        )
+        .unwrap();
 
         SpeakerProcessor {
             decoder,

@@ -5,7 +5,6 @@ use rand::{prelude::Distribution, SeedableRng};
 
 // use tracing::{debug, info, instrument, trace, trace_span, warn};
 
-
 #[derive(Debug, Clone)]
 pub struct DecodingResult {
     pub tokens: Vec<u32>,
