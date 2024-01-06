@@ -211,7 +211,6 @@ impl SpeakerProcessor {
             &self.device,
         )
         .unwrap();
-        dbg!(mel.shape());
         self.decoder.run(&mel).unwrap()
     }
 }

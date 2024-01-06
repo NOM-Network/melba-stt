@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = tokio::fs::read_to_string("bot.toml").await?;
-    let config: bot::config::SttConfig = toml::from_str(&config)?;
+    let config: bot::config::Config = toml::from_str(&config)?;
     let secrets = tokio::fs::read_to_string("secrets.toml").await?;
     let secrets: bot::config::Secrets = toml::from_str(&secrets)?;
 
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream_processor = Arc::new(StreamProcessor::new(model));
 
     let recorder =
-        recorder::Recorder::new(format!("recordings/{}", config.channel_to_join.guild_id).into())
+        recorder::Recorder::new(format!("recordings/{}", config.stt.channel_to_join.guild_id).into())
             .await;
 
     let mut client = bot::discord::setup_discord_bot(

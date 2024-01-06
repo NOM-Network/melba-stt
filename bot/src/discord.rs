@@ -10,7 +10,7 @@ pub async fn setup_discord_bot(
     token: &str,
     stream_processor: Arc<StreamProcessor>,
     recorder: recorder::Recorder,
-    config: config::SttConfig,
+    config: config::Config,
 ) -> serenity::Client {
     use serenity::prelude::*;
     use songbird::SerenityInit;
@@ -34,7 +34,7 @@ pub async fn setup_discord_bot(
 
 struct Handler {
     stream_processor: Arc<StreamProcessor>,
-    config: config::SttConfig,
+    config: config::Config,
     recorder: recorder::Recorder,
 }
 
@@ -56,7 +56,7 @@ impl serenity::client::EventHandler for Handler {
             .session(
                 format!(
                     "{}-{}",
-                    self.config.channel_to_join.channel_id,
+                    self.config.stt.channel_to_join.channel_id,
                     time::OffsetDateTime::now_utc().unix_timestamp_nanos(),
                 )
                 .into(),
@@ -69,8 +69,8 @@ impl serenity::client::EventHandler for Handler {
 
         let c = manager
             .join(
-                serenity::model::id::GuildId::new(self.config.channel_to_join.guild_id),
-                serenity::model::id::ChannelId::new(self.config.channel_to_join.channel_id),
+                serenity::model::id::GuildId::new(self.config.stt.channel_to_join.guild_id),
+                serenity::model::id::ChannelId::new(self.config.stt.channel_to_join.channel_id),
             )
             .await
             .unwrap();
@@ -196,7 +196,7 @@ impl songbird::EventHandler for Receiver {
                 let ssrc = match ssrc {
                     Some(ssrc) => ssrc,
                     None => {
-                        // if for some reason a user never spoke
+                        // if a user never spoke, don't try to save their speech
                         return None;
                     }
                 };

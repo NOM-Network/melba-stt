@@ -2,9 +2,21 @@
 # client by enabling developer mode in advanced settings, then right clicking on
 # the corresponding entity (e.g. right click on a user to copy their id)
 
+[ws]
+# the websocket server to connect to
+url = "ws://localhost:9876"
+
+[stt]
 # the channel the bot should attempt to join at startup
 channel_to_join = { guild_id = 574720535888396288, channel_id = 1063254870775312434 }
-# the following discord user ids should be ignored, and will not have audio transcribed when they speak
+# the following discord user ids should be ignored
+# and will not have audio transcribed when they speak
+# ignoring a user here will also ignore them from being recorded
 ignored_users = [183249892712513536]
-# the websocket server to connect to
-ws_url = "ws://localhost:9876"
+
+[recorder]
+# this decides where recorded audio from discord sessions should go
+directory = "./recordings/"
+# these users won't have any audio saved when they talk
+# but if they don't appear in the root `ignored_users` key then they will
+ignored_users = []
