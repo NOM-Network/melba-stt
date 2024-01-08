@@ -34,17 +34,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .unwrap();
 
-    let stream_processor = Arc::new(StreamProcessor::new(model));
+    let (completed_speech_send, completed_speech_recv) = tokio::sync::broadcast::channel(16);
 
-    let recorder =
-        recorder::Recorder::new(format!("recordings/{}", config.stt.channel_to_join.guild_id).into())
-            .await;
+    let stream_processor = Arc::new(StreamProcessor::new(model, completed_speech_send));
+
+    let recorder = recorder::Recorder::new(
+        format!("recordings/{}", config.stt.channel_to_join.guild_id).into(),
+    )
+    .await;
 
     let mut client = bot::discord::setup_discord_bot(
         &secrets.discord_token,
         stream_processor,
         recorder,
         config.clone(),
+        // ws_handler,
+        completed_speech_recv,
     )
     .await;
     client.start().await.expect("run failed");

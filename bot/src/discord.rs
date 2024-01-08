@@ -11,12 +11,24 @@ pub async fn setup_discord_bot(
     stream_processor: Arc<StreamProcessor>,
     recorder: recorder::Recorder,
     config: config::Config,
+    completed_speech_recv: tokio::sync::broadcast::Receiver<crate::stream::UserSegments>,
 ) -> serenity::Client {
     use serenity::prelude::*;
     use songbird::SerenityInit;
 
     let songbird_config =
         songbird::Config::default().decode_mode(songbird::driver::DecodeMode::Decode);
+
+    let (ws_out_send, _ws_out_recv) = tokio::sync::mpsc::channel(16);
+    let (voice_event_send, voice_event_recv) = tokio::sync::broadcast::channel(16);
+
+    let ws_handler = crate::ws::Handler::new(
+        config.clone(),
+        ws_out_send,
+        completed_speech_recv,
+        voice_event_send,
+        voice_event_recv,
+    );
 
     Client::builder(
         token,
@@ -25,8 +37,9 @@ pub async fn setup_discord_bot(
     .event_handler(Handler {
         recorder,
         stream_processor,
-        config,
+        config: config.clone(),
     })
+    .event_handler(ws_handler)
     .register_songbird_from_config(songbird_config)
     .await
     .expect("failed to create client")
@@ -90,11 +103,6 @@ impl serenity::client::EventHandler for Handler {
             songbird::CoreEvent::ClientDisconnect.into(),
             receiver.clone(),
         );
-    }
-
-    async fn voice_state_update(&self, _: Context, old: Option<VoiceState>, new: VoiceState) {
-        trace!(?old, ?new, "update");
-        // todo: log to websocket, though a seperate event handler for that would be nice to reduce clutter
     }
 }
 

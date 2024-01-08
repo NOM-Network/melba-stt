@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use itertools::Itertools;
-use nn::{iterator::SpectrogramIteratorExt, model::ModelContainer};
+use nn::{iterator::SpectrogramIteratorExt, model::ModelContainer, whisper::Segment};
 use tracing::{debug, info};
 
 const DISCORD_SAMPLERATE_HZ: usize = 48_000;
@@ -9,12 +9,17 @@ const WHISPER_SAMPLERATE_HZ: usize = 16_000;
 
 pub struct StreamProcessor {
     model: Arc<ModelContainer>,
+    completed_send: tokio::sync::broadcast::Sender<UserSegments>,
 }
 
 impl StreamProcessor {
-    pub fn new(model: ModelContainer) -> Self {
+    pub fn new(
+        model: ModelContainer,
+        completed_send: tokio::sync::broadcast::Sender<UserSegments>,
+    ) -> Self {
         Self {
             model: Arc::new(model),
+            completed_send,
         }
     }
 
@@ -46,7 +51,11 @@ impl StreamProcessor {
                             let (speech_s, speech_r) = tokio::sync::mpsc::channel(1024);
                             current_sender = Some(speech_s.clone());
                             let processor = self.model.get_new_speaker();
-                            std::thread::spawn(|| handle_speech(speech_r, processor));
+                            let completed_send = self.completed_send.clone();
+                            let user_id = user_id.clone();
+                            std::thread::spawn(move || {
+                                handle_speech(user_id, speech_r, processor, completed_send)
+                            });
 
                             speech_s
                         }
@@ -68,9 +77,12 @@ enum StreamSide {
 }
 
 fn handle_speech(
+    user_id: serenity::model::id::UserId,
     recv: tokio::sync::mpsc::Receiver<Vec<i16>>,
     mut processor: nn::model::SpeakerProcessor,
+    sender: tokio::sync::broadcast::Sender<UserSegments>,
 ) {
+    let started_listening_at = time::OffsetDateTime::now_utc();
     let resample_chunk_size = 20_000;
 
     let resampler = rubato::FastFixedIn::new(
@@ -129,10 +141,37 @@ fn handle_speech(
         .iter_mut()
         .for_each(|m| m.iter_mut().for_each(|m| *m = mel_max.max(*m) / 4.0 + 1.0));
 
+    let done_listening_at = time::OffsetDateTime::now_utc();
     let prediction = processor.predict_with_mel(spectrogram);
+    let done_prediction_at = time::OffsetDateTime::now_utc();
     info!(?prediction, "completed speech");
+    sender
+        .send(UserSegments {
+            user_id,
+            segments: prediction,
+            timings: Timings {
+                started_listening_at,
+                done_listening_at,
+                done_prediction_at,
+            },
+        })
+        .expect("failed to send to websocket");
 
     debug!("done listening");
+}
+
+#[derive(Debug, Clone)]
+pub struct Timings {
+    pub started_listening_at: time::OffsetDateTime,
+    pub done_listening_at: time::OffsetDateTime,
+    pub done_prediction_at: time::OffsetDateTime,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserSegments {
+    pub user_id: serenity::model::id::UserId,
+    pub segments: Vec<Segment>,
+    pub timings: Timings,
 }
 
 struct BlockingMpscIterator<T> {
